@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  DISPATCHER
+  ACCOUNTING
+}
+
+enum LoadStatus {
+  BOOKED
+  DISPATCHED
+  IN_TRANSIT
+  DELIVERED
+  INVOICED
+  CANCELLED
+}
+
+enum CarrierStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_APPROVAL
+}
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+  ON_LEAVE
+}
+
+enum RcStatus {
+  DRAFT
+  SENT
+  SIGNED
+  VOID
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum SettlementStatus {
+  PENDING
+  APPROVED
+  PAID
+}
+
+// ---------------------------------------------------------------------------
+// Core entities
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(DISPATCHER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  loadsCreated Load[] @relation("LoadCreatedBy")
+
+  @@map("users")
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  name        String
+  contactName String?
+  email       String?
+  phone       String?
+  addressLine String?
+  city        String?
+  state       String?
+  zip         String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  loads    Load[]
+  invoices Invoice[]
+
+  @@map("customers")
+}
+
+model Carrier {
+  id                String        @id @default(cuid())
+  name              String
+  mcNumber          String?
+  dotNumber         String?
+  contactName       String?
+  email             String?
+  phone             String?
+  insuranceProvider String?
+  insuranceExpiry   DateTime?
+  status            CarrierStatus @default(ACTIVE)
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  drivers            Driver[]
+  loads              Load[]
+  rateConfirmations  RateConfirmation[]
+  settlements        Settlement[]
+
+  @@map("carriers")
+}
+
+model Driver {
+  id             String       @id @default(cuid())
+  name           String
+  phone          String?
+  email          String?
+  licenseNumber  String?
+  licenseExpiry  DateTime?
+  truckNumber    String?
+  trailerNumber  String?
+  status         DriverStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  carrierId String?
+  carrier   Carrier? @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+
+  loads Load[]
+
+  @@map("drivers")
+}
+
+model Load {
+  id              String     @id @default(cuid())
+  referenceNumber String     @unique
+  status          LoadStatus @default(BOOKED)
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  carrierId String?
+  carrier   Carrier? @relation(fields: [carrierId], references: [id], onDelete: SetNull)
+
+  driverId String?
+  driver   Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+
+  pickupLocation   String
+  pickupDate       DateTime
+  deliveryLocation String
+  deliveryDate     DateTime
+
+  commodity   String?
+  weightLbs   Int?
+  equipment   String?
+
+  customerRate Decimal @db.Decimal(10, 2) @default(0)
+  carrierRate  Decimal @db.Decimal(10, 2) @default(0)
+
+  notes String?
+
+  createdById String?
+  createdBy   User?   @relation("LoadCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  trackingUpdates   TrackingUpdate[]
+  rateConfirmations RateConfirmation[]
+  invoices          Invoice[]
+  settlements       Settlement[]
+
+  @@index([status])
+  @@map("loads")
+}
+
+model TrackingUpdate {
+  id        String   @id @default(cuid())
+  loadId    String
+  load      Load     @relation(fields: [loadId], references: [id], onDelete: Cascade)
+  status    LoadStatus
+  location  String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([loadId])
+  @@map("tracking_updates")
+}
+
+// ---------------------------------------------------------------------------
+// Rate Confirmations (RCs) — the broker-to-carrier rate agreement per load.
+// Generated PDFs are stored in Supabase Storage; this table is the "RC
+// database" record: number, terms, status, and links to the stored files.
+// ---------------------------------------------------------------------------
+
+model RateConfirmation {
+  id       String   @id @default(cuid())
+  rcNumber String   @unique
+
+  loadId String
+  load   Load   @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  carrierId String
+  carrier   Carrier @relation(fields: [carrierId], references: [id], onDelete: Restrict)
+
+  rateAmount Decimal  @db.Decimal(10, 2)
+  status     RcStatus @default(DRAFT)
+
+  pdfUrl       String?
+  signedPdfUrl String?
+
+  sentAt   DateTime?
+  signedAt DateTime?
+
+  terms String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([loadId])
+  @@index([carrierId])
+  @@map("rate_confirmations")
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  status        InvoiceStatus @default(DRAFT)
+
+  loadId String
+  load   Load   @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  amount  Decimal   @db.Decimal(10, 2)
+  dueDate DateTime?
+  paidAt  DateTime?
+
+  pdfUrl String?
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([loadId])
+  @@index([customerId])
+  @@map("invoices")
+}
+
+model Settlement {
+  id     String           @id @default(cuid())
+  status SettlementStatus @default(PENDING)
+
+  loadId String
+  load   Load   @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  carrierId String
+  carrier   Carrier @relation(fields: [carrierId], references: [id], onDelete: Restrict)
+
+  amount   Decimal   @db.Decimal(10, 2)
+  paidAt   DateTime?
+  notes    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([loadId])
+  @@index([carrierId])
+  @@map("settlements")
+}
