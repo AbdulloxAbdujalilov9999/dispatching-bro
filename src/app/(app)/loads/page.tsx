@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { Table, Thead, Th, Tr, Td } from "@/components/ui/Table";
 import { StatusBadge } from "@/components/ui/Badge";
 import { LoadsBoard } from "@/components/loads/LoadsBoard";
+import { LoadsExcelActions } from "@/components/loads/LoadsExcelActions";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -41,9 +42,12 @@ export default async function LoadsPage({ searchParams }: { searchParams: Promis
         title="Loads"
         description="Your dispatch board — track every load from booking to invoice."
         actions={
-          <LinkButton href="/loads/new">
-            <Plus className="h-4 w-4" /> New load
-          </LinkButton>
+          <div className="flex items-center gap-2">
+            <LoadsExcelActions />
+            <LinkButton href="/loads/new">
+              <Plus className="h-4 w-4" /> New load
+            </LinkButton>
+          </div>
         }
       />
 

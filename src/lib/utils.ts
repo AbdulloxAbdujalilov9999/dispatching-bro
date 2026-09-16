@@ -33,10 +33,3 @@ export function initials(name: string) {
     .map((part) => part[0]?.toUpperCase())
     .join("");
 }
-
-export function nextSequenceNumber(prefix: string, lastNumber?: string | null) {
-  if (!lastNumber) return `${prefix}-10001`;
-  const match = lastNumber.match(/(\d+)$/);
-  const next = match ? parseInt(match[1], 10) + 1 : 10001;
-  return `${prefix}-${next}`;
-}

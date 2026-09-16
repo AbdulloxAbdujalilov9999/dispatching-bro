@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession, handleApiError } from "@/lib/api";
-import { nextSequenceNumber } from "@/lib/utils";
+import { nextSequenceNumber } from "@/lib/sequence";
 import { uploadDocument } from "@/lib/supabase";
 
 export const runtime = "nodejs";
@@ -32,16 +32,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "File is too large (max 15MB)" }, { status: 400 });
     }
 
-    const [load, carrier, last] = await Promise.all([
+    const [load, carrier] = await Promise.all([
       prisma.load.findUnique({ where: { id: loadId } }),
       prisma.carrier.findUnique({ where: { id: carrierId } }),
-      prisma.rateConfirmation.findFirst({ orderBy: { createdAt: "desc" } }),
     ]);
     if (!load) return NextResponse.json({ error: "Load not found" }, { status: 404 });
     if (!carrier) return NextResponse.json({ error: "Carrier not found" }, { status: 404 });
 
     const rateAmount = rateAmountRaw ? Number(rateAmountRaw) : Number(load.carrierRate);
-    const rcNumber = nextSequenceNumber("RC", last?.rcNumber);
+    const rcNumber = await nextSequenceNumber("RC");
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const ext = file.name.includes(".") ? file.name.split(".").pop() : "pdf";

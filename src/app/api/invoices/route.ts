@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { invoiceSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
-import { nextSequenceNumber } from "@/lib/utils";
+import { nextSequenceNumber } from "@/lib/sequence";
 
 export async function GET() {
   const { response } = await requireSession(["ADMIN", "MANAGER", "ACCOUNTING"]);
@@ -23,8 +23,7 @@ export async function POST(req: NextRequest) {
     const body = emptyToNull(await req.json());
     const data = invoiceSchema.parse(body);
 
-    const last = await prisma.invoice.findFirst({ orderBy: { createdAt: "desc" } });
-    const invoiceNumber = nextSequenceNumber("INV", last?.invoiceNumber);
+    const invoiceNumber = await nextSequenceNumber("INV");
 
     const invoice = await prisma.invoice.create({
       data: {

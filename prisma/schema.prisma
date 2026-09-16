@@ -144,6 +144,7 @@ model Driver {
 
   loads Load[]
 
+  @@index([carrierId])
   @@map("drivers")
 }
 
@@ -160,6 +161,8 @@ model Load {
 
   driverId String?
   driver   Driver? @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  // ^ indexes on these three FKs and createdAt keep the dispatch board and
+  // filtered list queries fast as load volume grows with concurrent usage.
 
   pickupLocation   String
   pickupDate       DateTime
@@ -187,6 +190,10 @@ model Load {
   settlements       Settlement[]
 
   @@index([status])
+  @@index([customerId])
+  @@index([carrierId])
+  @@index([driverId])
+  @@index([createdAt])
   @@map("loads")
 }
 
@@ -284,4 +291,18 @@ model Settlement {
   @@index([loadId])
   @@index([carrierId])
   @@map("settlements")
+}
+
+// ---------------------------------------------------------------------------
+// Atomic counters backing human-readable reference numbers (LD-, RC-, INV-).
+// A single row per prefix, incremented with an atomic upsert so concurrent
+// dispatchers creating loads/RCs/invoices at the same time never race each
+// other into generating the same number.
+// ---------------------------------------------------------------------------
+
+model SequenceCounter {
+  key   String @id
+  value Int    @default(10000)
+
+  @@map("sequence_counters")
 }

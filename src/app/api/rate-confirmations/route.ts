@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { rateConfirmationSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
-import { nextSequenceNumber } from "@/lib/utils";
+import { nextSequenceNumber } from "@/lib/sequence";
 import { RateConfirmationDocument } from "@/lib/pdf/documents";
 import { renderPdfBuffer } from "@/lib/pdf/render";
 import { uploadDocument } from "@/lib/supabase";
@@ -28,16 +28,15 @@ export async function POST(req: NextRequest) {
     const body = emptyToNull(await req.json());
     const data = rateConfirmationSchema.parse(body);
 
-    const [load, carrier, last] = await Promise.all([
+    const [load, carrier] = await Promise.all([
       prisma.load.findUnique({ where: { id: data.loadId } }),
       prisma.carrier.findUnique({ where: { id: data.carrierId } }),
-      prisma.rateConfirmation.findFirst({ orderBy: { createdAt: "desc" } }),
     ]);
 
     if (!load) return NextResponse.json({ error: "Load not found" }, { status: 404 });
     if (!carrier) return NextResponse.json({ error: "Carrier not found" }, { status: 404 });
 
-    const rcNumber = nextSequenceNumber("RC", last?.rcNumber);
+    const rcNumber = await nextSequenceNumber("RC");
 
     const rc = await prisma.rateConfirmation.create({
       data: {

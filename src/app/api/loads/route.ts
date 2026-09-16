@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { loadSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
-import { nextSequenceNumber } from "@/lib/utils";
+import { nextSequenceNumber } from "@/lib/sequence";
 
 export async function GET(req: NextRequest) {
   const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER"]);
@@ -26,8 +26,7 @@ export async function POST(req: NextRequest) {
     const body = emptyToNull(await req.json());
     const data = loadSchema.parse(body);
 
-    const last = await prisma.load.findFirst({ orderBy: { createdAt: "desc" } });
-    const referenceNumber = data.referenceNumber || nextSequenceNumber("LD", last?.referenceNumber);
+    const referenceNumber = data.referenceNumber || (await nextSequenceNumber("LD"));
 
     const load = await prisma.load.create({
       data: {
