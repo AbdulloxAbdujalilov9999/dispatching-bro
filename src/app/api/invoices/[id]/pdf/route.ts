@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const params = await context.params;
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "ACCOUNTING"]);
   if (response) return response;
 
   const invoice = await prisma.invoice.findUnique({

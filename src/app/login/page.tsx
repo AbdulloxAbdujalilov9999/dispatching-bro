@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, Suspense } from "react";
+import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Truck, AlertCircle } from "lucide-react";
@@ -12,7 +13,9 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const [email, setEmail] = useState("admin@dispatchplatform.com");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() =>
+    searchParams.get("disabled") ? "This account no longer has access to the platform. Contact an admin." : null
+  );
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -29,7 +32,7 @@ function LoginForm() {
     setLoading(false);
 
     if (res?.error) {
-      setError("Invalid email or password.");
+      setError("Invalid email or password, or your account is awaiting admin approval.");
       return;
     }
 
@@ -38,17 +41,17 @@ function LoginForm() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface-subtle px-4">
+    <div className="flex min-h-screen items-center justify-center bg-surface-subtle px-4 dark:bg-slate-950">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-600 text-white shadow-card">
             <Truck className="h-5.5 w-5.5" />
           </div>
-          <h1 className="mt-4 text-lg font-semibold text-ink">Sign in to Haulwise</h1>
+          <h1 className="mt-4 text-lg font-semibold text-ink dark:text-white">Sign in to Haulwise</h1>
           <p className="mt-1 text-sm text-ink-faint">Dispatch, rate confirmations, invoicing & tracking</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="rounded-2xl border border-surface-border bg-white p-6 shadow-card">
+        <form onSubmit={handleSubmit} className="rounded-2xl border border-surface-border bg-white p-6 shadow-card dark:border-white/10 dark:bg-slate-900">
           {error && (
             <div className="mb-4 flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
               <AlertCircle className="h-4 w-4 shrink-0" />
@@ -90,6 +93,12 @@ function LoginForm() {
 
           <p className="mt-4 text-center text-xs text-ink-faint">
             Demo: admin@dispatchplatform.com / password123
+          </p>
+          <p className="mt-2 text-center text-xs text-ink-faint">
+            New here?{" "}
+            <Link href="/signup" className="font-medium text-brand-700 hover:underline">
+              Create an account
+            </Link>
           </p>
         </form>
       </div>

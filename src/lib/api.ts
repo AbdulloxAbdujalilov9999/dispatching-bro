@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import type { Role } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { ZodError } from "zod";
 
-export async function requireSession() {
+export async function requireSession(allowedRoles?: Role[]) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return { session: null, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  if (allowedRoles && !allowedRoles.includes(session.user.role)) {
+    return { session: null, response: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };
   }
   return { session, response: null };
 }

@@ -47,12 +47,12 @@ export default async function LoadsPage({ searchParams }: { searchParams: Promis
         }
       />
 
-      <div className="mb-4 inline-flex rounded-lg border border-surface-border bg-white p-1">
+      <div className="mb-4 inline-flex rounded-lg border border-surface-border bg-white p-1 dark:border-white/10 dark:bg-slate-900">
         <Link
           href="/loads?view=board"
           className={cn(
             "rounded-md px-3 py-1.5 text-sm font-medium",
-            view === "board" ? "bg-brand-600 text-white" : "text-ink-soft hover:bg-surface-subtle"
+            view === "board" ? "bg-brand-600 text-white" : "text-ink-soft hover:bg-surface-subtle dark:text-slate-300 dark:hover:bg-white/5"
           )}
         >
           Board
@@ -61,7 +61,7 @@ export default async function LoadsPage({ searchParams }: { searchParams: Promis
           href="/loads?view=list"
           className={cn(
             "rounded-md px-3 py-1.5 text-sm font-medium",
-            view === "list" ? "bg-brand-600 text-white" : "text-ink-soft hover:bg-surface-subtle"
+            view === "list" ? "bg-brand-600 text-white" : "text-ink-soft hover:bg-surface-subtle dark:text-slate-300 dark:hover:bg-white/5"
           )}
         >
           List

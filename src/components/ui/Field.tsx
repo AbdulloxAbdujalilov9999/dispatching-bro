@@ -2,7 +2,7 @@ import { InputHTMLAttributes, SelectHTMLAttributes, TextareaHTMLAttributes, forw
 import { cn } from "@/lib/utils";
 
 const fieldClasses =
-  "w-full rounded-lg border border-surface-border bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100 disabled:bg-surface-subtle disabled:text-ink-faint";
+  "w-full rounded-lg border border-surface-border bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100 disabled:bg-surface-subtle disabled:text-ink-faint dark:border-white/10 dark:bg-slate-800 dark:text-slate-100 dark:focus:ring-brand-500/20 dark:disabled:bg-slate-900";
 
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   ({ className, ...props }, ref) => (
@@ -29,7 +29,7 @@ Select.displayName = "Select";
 
 export function Label({ children, htmlFor, required }: { children: React.ReactNode; htmlFor?: string; required?: boolean }) {
   return (
-    <label htmlFor={htmlFor} className="mb-1.5 block text-sm font-medium text-ink">
+    <label htmlFor={htmlFor} className="mb-1.5 block text-sm font-medium text-ink dark:text-slate-200">
       {children}
       {required && <span className="ml-0.5 text-red-500">*</span>}
     </label>

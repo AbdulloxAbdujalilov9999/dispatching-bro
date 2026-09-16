@@ -27,7 +27,7 @@ export function StatCard({
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm text-ink-faint">{label}</p>
-          <p className="mt-1.5 text-2xl font-semibold text-ink">{value}</p>
+          <p className="mt-1.5 text-2xl font-semibold text-ink dark:text-white">{value}</p>
         </div>
         <div className={cn("flex h-10 w-10 items-center justify-center rounded-xl", accentClasses[accent])}>
           <Icon className="h-5 w-5" />

@@ -15,8 +15,10 @@ datasource db {
 
 enum Role {
   ADMIN
+  MANAGER
   DISPATCHER
   ACCOUNTING
+  HR
 }
 
 enum LoadStatus {
@@ -71,6 +73,7 @@ model User {
   email        String   @unique
   passwordHash String
   role         Role     @default(DISPATCHER)
+  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

@@ -5,7 +5,7 @@ import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 
 export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const params = await context.params;
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER"]);
   if (response) return response;
 
   try {

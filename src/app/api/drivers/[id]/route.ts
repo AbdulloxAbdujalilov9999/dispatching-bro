@@ -5,7 +5,7 @@ import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 
 export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const params = await context.params;
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "HR"]);
   if (response) return response;
 
   const driver = await prisma.driver.findUnique({
@@ -21,7 +21,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ id: st
 
 export async function PATCH(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const params = await context.params;
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "HR"]);
   if (response) return response;
 
   try {
@@ -44,7 +44,7 @@ export async function PATCH(req: NextRequest, context: { params: Promise<{ id: s
 
 export async function DELETE(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const params = await context.params;
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "HR"]);
   if (response) return response;
 
   try {

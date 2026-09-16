@@ -5,7 +5,7 @@ import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 import { nextSequenceNumber } from "@/lib/utils";
 
 export async function GET(req: NextRequest) {
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER"]);
   if (response) return response;
 
   const status = req.nextUrl.searchParams.get("status");
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const { session, response } = await requireSession();
+  const { session, response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER"]);
   if (response) return response;
 
   try {

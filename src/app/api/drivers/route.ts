@@ -4,7 +4,7 @@ import { driverSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 
 export async function GET() {
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "HR"]);
   if (response) return response;
 
   const drivers = await prisma.driver.findMany({
@@ -15,7 +15,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "HR"]);
   if (response) return response;
 
   try {

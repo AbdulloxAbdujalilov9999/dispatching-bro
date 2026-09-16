@@ -4,7 +4,7 @@ import { customerSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 
 export async function GET() {
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "ACCOUNTING"]);
   if (response) return response;
 
   const customers = await prisma.customer.findMany({
@@ -15,7 +15,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { response } = await requireSession();
+  const { response } = await requireSession(["ADMIN", "MANAGER", "DISPATCHER", "ACCOUNTING"]);
   if (response) return response;
 
   try {

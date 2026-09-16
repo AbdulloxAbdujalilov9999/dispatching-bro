@@ -11,7 +11,7 @@ export function Table({ children, className }: { children: React.ReactNode; clas
 export function Thead({ children }: { children: React.ReactNode }) {
   return (
     <thead>
-      <tr className="border-b border-surface-border text-xs font-medium uppercase tracking-wide text-ink-faint">
+      <tr className="border-b border-surface-border text-xs font-medium uppercase tracking-wide text-ink-faint dark:border-white/10">
         {children}
       </tr>
     </thead>
@@ -32,12 +32,21 @@ export function Td({
   colSpan?: number;
 }) {
   return (
-    <td colSpan={colSpan} className={cn("px-5 py-3.5 align-middle text-ink", className)}>
+    <td colSpan={colSpan} className={cn("px-5 py-3.5 align-middle text-ink dark:text-slate-100", className)}>
       {children}
     </td>
   );
 }
 
 export function Tr({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <tr className={cn("border-b border-surface-border last:border-0 hover:bg-surface-subtle/60", className)}>{children}</tr>;
+  return (
+    <tr
+      className={cn(
+        "border-b border-surface-border last:border-0 hover:bg-surface-subtle/60 dark:border-white/10 dark:hover:bg-white/5",
+        className
+      )}
+    >
+      {children}
+    </tr>
+  );
 }

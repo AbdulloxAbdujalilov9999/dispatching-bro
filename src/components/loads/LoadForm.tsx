@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
+import { FileSignature, UploadCloud } from "lucide-react";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button, LinkButton } from "@/components/ui/Button";
 import { FieldGroup, FormRow, Input, Label, Select, Textarea } from "@/components/ui/Field";
@@ -68,17 +69,27 @@ export function LoadForm({
   );
   const [errors, setErrors] = useState<Record<string, string[] | undefined>>({});
   const [loading, setLoading] = useState(false);
+  const [rcFile, setRcFile] = useState<File | null>(null);
+  const [rcFileError, setRcFileError] = useState<string | null>(null);
 
   function set<K extends keyof LoadFormValues>(key: K, value: LoadFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
   }
 
   const availableDrivers = values.carrierId ? drivers.filter((d) => d.carrierId === values.carrierId) : drivers;
+  const rcRequired = !loadId && !!values.carrierId;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
     setErrors({});
+    setRcFileError(null);
+
+    if (rcRequired && !rcFile) {
+      setRcFileError("Upload the rate confirmation for this carrier before creating the load.");
+      return;
+    }
+
+    setLoading(true);
     try {
       if (loadId) {
         await apiRequest(`/api/loads/${loadId}`, { method: "PATCH", json: values });
@@ -86,6 +97,24 @@ export function LoadForm({
         router.push(`/loads/${loadId}`);
       } else {
         const created = await apiRequest(`/api/loads`, { method: "POST", json: values });
+
+        if (rcFile && values.carrierId) {
+          try {
+            const formData = new FormData();
+            formData.append("loadId", created.id);
+            formData.append("carrierId", values.carrierId);
+            formData.append("rateAmount", String(values.carrierRate));
+            formData.append("file", rcFile);
+            await apiRequest(`/api/rate-confirmations/upload`, { method: "POST", body: formData });
+          } catch (uploadErr) {
+            toast.error(
+              uploadErr instanceof ApiError
+                ? `Load created, but the RC upload failed: ${uploadErr.message}`
+                : "Load created, but the RC upload failed. You can upload it from the load's page."
+            );
+          }
+        }
+
         toast.success("Load created");
         router.push(`/loads/${created.id}`);
       }
@@ -151,6 +180,40 @@ export function LoadForm({
               </Select>
             </FieldGroup>
           </FormRow>
+
+          {!loadId && values.carrierId && (
+            <FieldGroup>
+              <Label htmlFor="rcFile" required>
+                Rate confirmation document
+              </Label>
+              <label
+                htmlFor="rcFile"
+                className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-surface-border bg-surface-subtle px-4 py-3 text-sm text-ink-soft hover:border-brand-400 hover:bg-brand-50/40"
+              >
+                {rcFile ? <FileSignature className="h-5 w-5 text-brand-600" /> : <UploadCloud className="h-5 w-5 text-ink-faint" />}
+                <span className="flex-1 truncate">
+                  {rcFile ? rcFile.name : "Upload the signed rate confirmation (PDF or image)"}
+                </span>
+                <span className="shrink-0 rounded-md bg-white px-2.5 py-1 text-xs font-medium text-brand-700 shadow-sm">
+                  Choose file
+                </span>
+              </label>
+              <input
+                id="rcFile"
+                type="file"
+                accept=".pdf,image/*"
+                className="hidden"
+                onChange={(e) => {
+                  setRcFile(e.target.files?.[0] || null);
+                  setRcFileError(null);
+                }}
+              />
+              {rcFileError && <p className="mt-1 text-xs text-red-600">{rcFileError}</p>}
+              <p className="mt-1 text-xs text-ink-faint">
+                A carrier is assigned, so the rate confirmation must be attached before this load can be created.
+              </p>
+            </FieldGroup>
+          )}
 
           {loadId && (
             <FieldGroup>

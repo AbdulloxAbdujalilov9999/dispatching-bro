@@ -28,6 +28,22 @@ async function main() {
     },
   });
 
+  // Real owner account. Re-running the seed always re-asserts ADMIN + active
+  // for this address (in case it's ever changed by mistake), but never
+  // overwrites the password once it's been set by a real login.
+  const ownerPasswordHash = await bcrypt.hash("Haulwise2026!", 10);
+  await prisma.user.upsert({
+    where: { email: "abdujalilov7707@gmail.com" },
+    update: { role: "ADMIN", active: true },
+    create: {
+      name: "Abdullox Abdujalilov",
+      email: "abdujalilov7707@gmail.com",
+      passwordHash: ownerPasswordHash,
+      role: "ADMIN",
+      active: true,
+    },
+  });
+
   const customerA = await prisma.customer.create({
     data: {
       name: "Northwind Distribution",
@@ -233,7 +249,8 @@ async function main() {
   });
 
   console.log("Seed complete.");
-  console.log("Login with admin@dispatchplatform.com / password123");
+  console.log("Demo login: admin@dispatchplatform.com / password123");
+  console.log("Owner admin login: abdujalilov7707@gmail.com / Haulwise2026!  (change this password after first login)");
 }
 
 main()

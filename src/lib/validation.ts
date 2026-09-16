@@ -85,3 +85,19 @@ export const settlementSchema = z.object({
   amount: z.coerce.number().min(0),
   notes: z.string().optional().nullable(),
 });
+
+export const registerSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email("Enter a valid email"),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+export const userUpdateSchema = z.object({
+  role: z.enum(["ADMIN", "MANAGER", "DISPATCHER", "ACCOUNTING", "HR"]).optional(),
+  active: z.boolean().optional(),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+});
