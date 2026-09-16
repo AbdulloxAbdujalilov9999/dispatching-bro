@@ -44,6 +44,21 @@ async function main() {
     },
   });
 
+  // Demo data (customers/carriers/drivers/loads/RCs/invoice/settlement) is
+  // only ever created once. Re-running the seed after it succeeded must not
+  // duplicate rows or crash on the hardcoded reference numbers below.
+  const demoAlreadySeeded = await prisma.load.findUnique({
+    where: { referenceNumber: "LD-10001" },
+  });
+
+  if (demoAlreadySeeded) {
+    console.log("Demo data already seeded, skipping.");
+    console.log("Seed complete.");
+    console.log("Demo login: admin@dispatchplatform.com / password123");
+    console.log("Owner admin login: abdujalilov7707@gmail.com / Haulwise2026!  (change this password after first login)");
+    return;
+  }
+
   const customerA = await prisma.customer.create({
     data: {
       name: "Northwind Distribution",
