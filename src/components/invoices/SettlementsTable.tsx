@@ -42,19 +42,19 @@ export function SettlementsTable({ settlements }: { settlements: Settlement[] })
       <tbody>
         {settlements.map((s) => (
           <Tr key={s.id}>
-            <Td>
+            <Td label="Load">
               <Link href={`/loads/${s.load.id}`} className="font-medium text-brand-700 hover:underline">
                 {s.load.referenceNumber}
               </Link>
             </Td>
-            <Td className="text-ink-soft">
+            <Td label="Carrier" className="text-ink-soft">
               <Link href={`/carriers/${s.carrier.id}`} className="hover:underline">
                 {s.carrier.name}
               </Link>
             </Td>
-            <Td className="text-ink-soft">{formatCurrency(s.amount)}</Td>
-            <Td className="text-ink-soft">{s.paidAt ? formatDate(s.paidAt) : "—"}</Td>
-            <Td>
+            <Td label="Amount" className="text-ink-soft">{formatCurrency(s.amount)}</Td>
+            <Td label="Paid" className="text-ink-soft">{s.paidAt ? formatDate(s.paidAt) : "—"}</Td>
+            <Td label="Status">
               <Select value={s.status} onChange={(e) => changeStatus(s.id, e.target.value)} className="h-8 w-36 py-1 text-xs">
                 <option value="PENDING">Pending</option>
                 <option value="APPROVED">Approved</option>

@@ -50,14 +50,14 @@ export default async function CustomersPage() {
             <tbody>
               {customers.map((c) => (
                 <Tr key={c.id}>
-                  <Td>
+                  <Td label="Company">
                     <Link href={`/customers/${c.id}`} className="font-medium text-brand-700 hover:underline">
                       {c.name}
                     </Link>
                   </Td>
-                  <Td className="text-ink-soft">{c.contactName || "—"}</Td>
-                  <Td className="text-ink-soft">{[c.city, c.state].filter(Boolean).join(", ") || "—"}</Td>
-                  <Td className="text-ink-soft">{c._count.loads}</Td>
+                  <Td label="Contact" className="text-ink-soft">{c.contactName || "—"}</Td>
+                  <Td label="Location" className="text-ink-soft">{[c.city, c.state].filter(Boolean).join(", ") || "—"}</Td>
+                  <Td label="Loads" className="text-ink-soft">{c._count.loads}</Td>
                 </Tr>
               ))}
             </tbody>

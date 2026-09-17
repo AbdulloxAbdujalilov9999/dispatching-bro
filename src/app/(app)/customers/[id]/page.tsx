@@ -86,19 +86,19 @@ export default async function CustomerDetailPage(context: { params: Promise<{ id
                 <tbody>
                   {customer.loads.map((load) => (
                     <Tr key={load.id}>
-                      <Td>
+                      <Td label="Reference">
                         <Link href={`/loads/${load.id}`} className="font-medium text-brand-700 hover:underline">
                           {load.referenceNumber}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">
+                      <Td label="Route" className="text-ink-soft">
                         {load.pickupLocation} → {load.deliveryLocation}
                       </Td>
-                      <Td className="text-ink-soft">{load.carrier?.name || "Unassigned"}</Td>
-                      <Td>
+                      <Td label="Carrier" className="text-ink-soft">{load.carrier?.name || "Unassigned"}</Td>
+                      <Td label="Status">
                         <StatusBadge status={load.status} />
                       </Td>
-                      <Td className="text-ink-soft">{formatCurrency(load.customerRate.toString())}</Td>
+                      <Td label="Rate" className="text-ink-soft">{formatCurrency(load.customerRate.toString())}</Td>
                     </Tr>
                   ))}
                 </tbody>
@@ -123,14 +123,14 @@ export default async function CustomerDetailPage(context: { params: Promise<{ id
                 <tbody>
                   {customer.invoices.map((inv) => (
                     <Tr key={inv.id}>
-                      <Td>
+                      <Td label="Invoice #">
                         <Link href={`/invoices/${inv.id}`} className="font-medium text-brand-700 hover:underline">
                           {inv.invoiceNumber}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">{formatCurrency(inv.amount.toString())}</Td>
-                      <Td className="text-ink-soft">{formatDate(inv.dueDate)}</Td>
-                      <Td>
+                      <Td label="Amount" className="text-ink-soft">{formatCurrency(inv.amount.toString())}</Td>
+                      <Td label="Due" className="text-ink-soft">{formatDate(inv.dueDate)}</Td>
+                      <Td label="Status">
                         <StatusBadge status={inv.status} />
                       </Td>
                     </Tr>

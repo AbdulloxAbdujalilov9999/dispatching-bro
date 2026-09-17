@@ -70,7 +70,7 @@ export default async function ReportsPage() {
           </CardHeader>
           <CardBody>
             <RevenueMarginChart data={revenueByMonth} />
-            <div className="mt-4 grid grid-cols-3 gap-3 border-t border-surface-border pt-4 text-sm">
+            <div className="mt-4 grid grid-cols-1 gap-3 border-t border-surface-border pt-4 text-sm sm:grid-cols-3">
               <div>
                 <p className="text-ink-faint">Total revenue</p>
                 <p className="font-semibold text-ink">{formatCurrency(totalRevenue)}</p>
@@ -117,8 +117,8 @@ export default async function ReportsPage() {
               )}
               {topCarriers.map(([name, total]) => (
                 <Tr key={name}>
-                  <Td>{name}</Td>
-                  <Td className="text-ink-soft">{formatCurrency(total)}</Td>
+                  <Td label="Carrier">{name}</Td>
+                  <Td label="Total paid" className="text-ink-soft">{formatCurrency(total)}</Td>
                 </Tr>
               ))}
             </tbody>
@@ -144,8 +144,8 @@ export default async function ReportsPage() {
               )}
               {topCustomers.map(([name, total]) => (
                 <Tr key={name}>
-                  <Td>{name}</Td>
-                  <Td className="text-ink-soft">{formatCurrency(total)}</Td>
+                  <Td label="Customer">{name}</Td>
+                  <Td label="Total billed" className="text-ink-soft">{formatCurrency(total)}</Td>
                 </Tr>
               ))}
             </tbody>

@@ -61,20 +61,20 @@ export default async function InvoicesPage() {
               <tbody>
                 {invoices.map((inv) => (
                   <Tr key={inv.id}>
-                    <Td>
+                    <Td label="Invoice #">
                       <Link href={`/invoices/${inv.id}`} className="font-medium text-brand-700 hover:underline">
                         {inv.invoiceNumber}
                       </Link>
                     </Td>
-                    <Td className="text-ink-soft">
+                    <Td label="Load" className="text-ink-soft">
                       <Link href={`/loads/${inv.load.id}`} className="hover:underline">
                         {inv.load.referenceNumber}
                       </Link>
                     </Td>
-                    <Td className="text-ink-soft">{inv.customer.name}</Td>
-                    <Td className="text-ink-soft">{formatCurrency(inv.amount.toString())}</Td>
-                    <Td className="text-ink-soft">{formatDate(inv.dueDate)}</Td>
-                    <Td>
+                    <Td label="Customer" className="text-ink-soft">{inv.customer.name}</Td>
+                    <Td label="Amount" className="text-ink-soft">{formatCurrency(inv.amount.toString())}</Td>
+                    <Td label="Due" className="text-ink-soft">{formatDate(inv.dueDate)}</Td>
+                    <Td label="Status">
                       <StatusBadge status={inv.status} />
                     </Td>
                   </Tr>

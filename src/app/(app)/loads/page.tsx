@@ -42,7 +42,7 @@ export default async function LoadsPage({ searchParams }: { searchParams: Promis
         title="Loads"
         description="Your dispatch board — track every load from booking to invoice."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <LoadsExcelActions />
             <LinkButton href="/loads/new">
               <Plus className="h-4 w-4" /> New load
@@ -89,21 +89,21 @@ export default async function LoadsPage({ searchParams }: { searchParams: Promis
             <tbody>
               {loads.map((load) => (
                 <Tr key={load.id}>
-                  <Td>
+                  <Td label="Reference">
                     <Link href={`/loads/${load.id}`} className="font-medium text-brand-700 hover:underline">
                       {load.referenceNumber}
                     </Link>
                   </Td>
-                  <Td className="text-ink-soft">
+                  <Td label="Route" className="text-ink-soft">
                     {load.pickupLocation} → {load.deliveryLocation}
                   </Td>
-                  <Td className="text-ink-soft">{load.customer?.name || "—"}</Td>
-                  <Td className="text-ink-soft">{load.carrier?.name || "Unassigned"}</Td>
-                  <Td className="text-ink-soft">{formatDate(load.pickupDate)}</Td>
-                  <Td>
+                  <Td label="Customer" className="text-ink-soft">{load.customer?.name || "—"}</Td>
+                  <Td label="Carrier" className="text-ink-soft">{load.carrier?.name || "Unassigned"}</Td>
+                  <Td label="Pickup" className="text-ink-soft">{formatDate(load.pickupDate)}</Td>
+                  <Td label="Status">
                     <StatusBadge status={load.status} />
                   </Td>
-                  <Td className="text-ink-soft">{formatCurrency(load.customerRate.toString())}</Td>
+                  <Td label="Rate" className="text-ink-soft">{formatCurrency(load.customerRate.toString())}</Td>
                 </Tr>
               ))}
             </tbody>

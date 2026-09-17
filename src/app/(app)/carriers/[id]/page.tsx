@@ -88,15 +88,15 @@ export default async function CarrierDetailPage(context: { params: Promise<{ id:
                 <tbody>
                   {carrier.drivers.map((d) => (
                     <Tr key={d.id}>
-                      <Td>
+                      <Td label="Name">
                         <Link href={`/drivers/${d.id}`} className="font-medium text-brand-700 hover:underline">
                           {d.name}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">
+                      <Td label="Truck / Trailer" className="text-ink-soft">
                         {d.truckNumber || "—"} / {d.trailerNumber || "—"}
                       </Td>
-                      <Td>
+                      <Td label="Status">
                         <StatusBadge status={d.status} />
                       </Td>
                     </Tr>
@@ -124,19 +124,19 @@ export default async function CarrierDetailPage(context: { params: Promise<{ id:
                 <tbody>
                   {carrier.loads.map((load) => (
                     <Tr key={load.id}>
-                      <Td>
+                      <Td label="Reference">
                         <Link href={`/loads/${load.id}`} className="font-medium text-brand-700 hover:underline">
                           {load.referenceNumber}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">
+                      <Td label="Route" className="text-ink-soft">
                         {load.pickupLocation} → {load.deliveryLocation}
                       </Td>
-                      <Td className="text-ink-soft">{load.customer?.name || "—"}</Td>
-                      <Td>
+                      <Td label="Customer" className="text-ink-soft">{load.customer?.name || "—"}</Td>
+                      <Td label="Status">
                         <StatusBadge status={load.status} />
                       </Td>
-                      <Td className="text-ink-soft">{formatCurrency(load.carrierRate.toString())}</Td>
+                      <Td label="Carrier rate" className="text-ink-soft">{formatCurrency(load.carrierRate.toString())}</Td>
                     </Tr>
                   ))}
                 </tbody>
@@ -160,13 +160,13 @@ export default async function CarrierDetailPage(context: { params: Promise<{ id:
                 <tbody>
                   {carrier.rateConfirmations.map((rc) => (
                     <Tr key={rc.id}>
-                      <Td>
+                      <Td label="RC #">
                         <Link href={`/rate-confirmations/${rc.id}`} className="font-medium text-brand-700 hover:underline">
                           {rc.rcNumber}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">{formatCurrency(rc.rateAmount.toString())}</Td>
-                      <Td>
+                      <Td label="Amount" className="text-ink-soft">{formatCurrency(rc.rateAmount.toString())}</Td>
+                      <Td label="Status">
                         <StatusBadge status={rc.status} />
                       </Td>
                     </Tr>

@@ -58,23 +58,23 @@ export default async function CarriersPage() {
                 const expiring = c.insuranceExpiry && c.insuranceExpiry < new Date(now.getTime() + 30 * 86400000);
                 return (
                   <Tr key={c.id}>
-                    <Td>
+                    <Td label="Carrier">
                       <Link href={`/carriers/${c.id}`} className="font-medium text-brand-700 hover:underline">
                         {c.name}
                       </Link>
                     </Td>
-                    <Td className="text-ink-soft">
+                    <Td label="MC / DOT" className="text-ink-soft">
                       {c.mcNumber || "—"} / {c.dotNumber || "—"}
                     </Td>
-                    <Td className="text-ink-soft">{c._count.drivers}</Td>
-                    <Td className="text-ink-soft">{c._count.loads}</Td>
-                    <Td className="text-ink-soft">
+                    <Td label="Drivers" className="text-ink-soft">{c._count.drivers}</Td>
+                    <Td label="Loads" className="text-ink-soft">{c._count.loads}</Td>
+                    <Td label="Insurance" className="text-ink-soft">
                       <span className="inline-flex items-center gap-1">
                         {expiring && <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />}
                         {formatDate(c.insuranceExpiry)}
                       </span>
                     </Td>
-                    <Td>
+                    <Td label="Status">
                       <StatusBadge status={c.status} />
                     </Td>
                   </Tr>

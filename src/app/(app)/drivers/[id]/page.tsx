@@ -95,16 +95,16 @@ export default async function DriverDetailPage(context: { params: Promise<{ id: 
                 <tbody>
                   {driver.loads.map((load) => (
                     <Tr key={load.id}>
-                      <Td>
+                      <Td label="Reference">
                         <Link href={`/loads/${load.id}`} className="font-medium text-brand-700 hover:underline">
                           {load.referenceNumber}
                         </Link>
                       </Td>
-                      <Td className="text-ink-soft">
+                      <Td label="Route" className="text-ink-soft">
                         {load.pickupLocation} → {load.deliveryLocation}
                       </Td>
-                      <Td className="text-ink-soft">{load.customer?.name || "—"}</Td>
-                      <Td>
+                      <Td label="Customer" className="text-ink-soft">{load.customer?.name || "—"}</Td>
+                      <Td label="Status">
                         <StatusBadge status={load.status} />
                       </Td>
                     </Tr>

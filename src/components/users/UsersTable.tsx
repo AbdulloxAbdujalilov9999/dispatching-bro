@@ -62,7 +62,7 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
                 </div>
               </div>
             </Td>
-            <Td>
+            <Td label="Role">
               <Select
                 value={u.role}
                 disabled={busyId === u.id}
@@ -76,11 +76,11 @@ export function UsersTable({ users, currentUserId }: { users: UserRow[]; current
                 ))}
               </Select>
             </Td>
-            <Td>
+            <Td label="Status">
               <Badge color={u.active ? "green" : "amber"}>{u.active ? "Active" : "Pending / Restricted"}</Badge>
             </Td>
-            <Td className="text-ink-soft">{formatDate(u.createdAt)}</Td>
-            <Td>
+            <Td label="Joined" className="text-ink-soft">{formatDate(u.createdAt)}</Td>
+            <Td label="Access">
               <Button
                 size="sm"
                 variant={u.active ? "outline" : "primary"}

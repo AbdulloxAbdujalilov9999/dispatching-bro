@@ -54,20 +54,20 @@ export default async function RateConfirmationsPage() {
             <tbody>
               {rcs.map((rc) => (
                 <Tr key={rc.id}>
-                  <Td>
+                  <Td label="RC #">
                     <Link href={`/rate-confirmations/${rc.id}`} className="font-medium text-brand-700 hover:underline">
                       {rc.rcNumber}
                     </Link>
                   </Td>
-                  <Td className="text-ink-soft">
+                  <Td label="Load" className="text-ink-soft">
                     <Link href={`/loads/${rc.load.id}`} className="hover:underline">
                       {rc.load.referenceNumber}
                     </Link>
                   </Td>
-                  <Td className="text-ink-soft">{rc.carrier.name}</Td>
-                  <Td className="text-ink-soft">{formatCurrency(rc.rateAmount.toString())}</Td>
-                  <Td className="text-ink-soft">{formatDate(rc.createdAt)}</Td>
-                  <Td>
+                  <Td label="Carrier" className="text-ink-soft">{rc.carrier.name}</Td>
+                  <Td label="Amount" className="text-ink-soft">{formatCurrency(rc.rateAmount.toString())}</Td>
+                  <Td label="Created" className="text-ink-soft">{formatDate(rc.createdAt)}</Td>
+                  <Td label="Status">
                     <StatusBadge status={rc.status} />
                   </Td>
                 </Tr>

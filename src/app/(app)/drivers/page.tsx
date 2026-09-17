@@ -52,17 +52,17 @@ export default async function DriversPage() {
             <tbody>
               {drivers.map((d) => (
                 <Tr key={d.id}>
-                  <Td>
+                  <Td label="Driver">
                     <Link href={`/drivers/${d.id}`} className="font-medium text-brand-700 hover:underline">
                       {d.name}
                     </Link>
                   </Td>
-                  <Td className="text-ink-soft">{d.carrier?.name || "Unassigned"}</Td>
-                  <Td className="text-ink-soft">
+                  <Td label="Carrier" className="text-ink-soft">{d.carrier?.name || "Unassigned"}</Td>
+                  <Td label="Truck / Trailer" className="text-ink-soft">
                     {d.truckNumber || "—"} / {d.trailerNumber || "—"}
                   </Td>
-                  <Td className="text-ink-soft">{d._count.loads}</Td>
-                  <Td>
+                  <Td label="Loads" className="text-ink-soft">{d._count.loads}</Td>
+                  <Td label="Status">
                     <StatusBadge status={d.status} />
                   </Td>
                 </Tr>
