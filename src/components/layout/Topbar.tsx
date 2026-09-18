@@ -7,7 +7,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn, initials } from "@/lib/utils";
 import { canAccess, type Section } from "@/lib/permissions";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
 
 const nav: { href: string; label: string; section: Section }[] = [
   { href: "/dashboard", label: "Dashboard", section: "dashboard" },

@@ -3,9 +3,6 @@ import { prisma } from "@/lib/prisma";
 import { rateConfirmationSchema } from "@/lib/validation";
 import { requireSession, handleApiError, emptyToNull } from "@/lib/api";
 import { nextSequenceNumber } from "@/lib/sequence";
-import { RateConfirmationDocument } from "@/lib/pdf/documents";
-import { renderPdfBuffer } from "@/lib/pdf/render";
-import { uploadDocument } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -48,31 +45,6 @@ export async function POST(req: NextRequest) {
       },
       include: { load: true, carrier: true },
     });
-
-    // Best-effort: generate the PDF and store it. If storage isn't configured
-    // yet (Supabase not connected), the RC record still exists and can be
-    // regenerated later via the "Generate PDF" action.
-    try {
-      const buffer = await renderPdfBuffer(
-        RateConfirmationDocument({
-          data: {
-            rcNumber: rc.rcNumber,
-            status: rc.status,
-            createdAt: rc.createdAt,
-            rateAmount: rc.rateAmount.toString(),
-            terms: rc.terms,
-            carrier: rc.carrier,
-            load: rc.load,
-          },
-        })
-      );
-      const path = `rate-confirmations/${rc.rcNumber}.pdf`;
-      await uploadDocument(path, buffer, "application/pdf");
-      await prisma.rateConfirmation.update({ where: { id: rc.id }, data: { pdfUrl: path } });
-      (rc as any).pdfUrl = path;
-    } catch (pdfError) {
-      console.error("RC PDF generation/upload skipped:", pdfError);
-    }
 
     return NextResponse.json(rc, { status: 201 });
   } catch (error) {

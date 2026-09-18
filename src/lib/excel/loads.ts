@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import type { Load, Customer, Carrier, Driver } from "@prisma/client";
+import type { Load, Customer, Carrier, Driver } from "@/lib/db/types";
 
 const SHEET_NAME = "Loads";
 

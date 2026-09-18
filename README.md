@@ -2,83 +2,91 @@
 
 A full freight dispatch platform: loads/dispatch board, carriers, drivers,
 customers, rate confirmations (RCs) with PDF generation, invoicing, carrier
-settlements, tracking, and reporting — built with Next.js, TypeScript,
-Prisma, and Supabase.
+settlements, tracking, and reporting — built with Next.js and TypeScript,
+using **Google Sheets as the database**. No database server, no VPS, no
+paid plan: it runs free on Vercel with your data in a Google Sheet you own.
 
 ## Stack
 
 - **Next.js 16 (App Router) + TypeScript + React 19** — UI and API routes in
-  one app, on the current stable Next.js release (the project started on
-  Next 14, but was upgraded before shipping since that version has known
-  security advisories — see `AGENTS.md`, which Next itself generates, for
-  a heads-up that this major version differs from older training data).
+  one app (see `AGENTS.md`: this major version differs from older training
+  data, so check `node_modules/next/dist/docs/` before changing framework code).
 - **Tailwind CSS** — design system.
-- **Prisma** — type-safe database access and migrations.
-- **Supabase** — free hosted Postgres database *and* file storage (used to
-  store generated Rate Confirmation and Invoice PDFs).
+- **Google Sheets** — the database. One tab per table (Users, Loads,
+  Carriers, ...). Talks to the Sheets REST API directly with a service
+  account; no extra dependencies. See `src/lib/db/`.
 - **NextAuth (Credentials)** — authentication with role-based access
-  (Admin / Dispatcher / Accounting).
-- **@react-pdf/renderer** — generates RC and invoice PDFs server-side.
+  (Admin / Manager / Dispatcher / Accounting / HR).
+- **@react-pdf/renderer** — generates RC and invoice PDFs on demand.
 - **Recharts** — dashboard and report charts.
+- **Google Drive (optional)** — only used to keep signed RC files that
+  dispatchers upload.
 
-## Why Supabase for the database
+## How the Google Sheets backend works
 
-You asked for a free database to store RCs (Rate Confirmations) and the
-rest of the platform's data. Supabase was chosen because:
+The rest of the app still calls `prisma.load.findMany({...})`,
+`prisma.load.create({...})` etc. exactly as before; `src/lib/prisma.ts` now
+points at a small query engine (`src/lib/db/`) that supports the same calls
+(`where`, `orderBy`, `include`, `select`, nested creates, `$transaction`)
+on top of Google Sheets.
 
-1. It's a **real hosted Postgres database** (free tier), which Prisma
-   supports natively with full relational integrity (loads ↔ carriers ↔
-   RCs ↔ invoices, etc.).
-2. It also includes **file storage** in the same free project, which this
-   app uses to store the generated RC and invoice PDF files — so you don't
-   need a second service for documents.
-3. It has a built-in dashboard/table editor, useful if you ever want to
-   look at or edit RC records by hand.
+- Every table is a tab. Row 1 holds the column names. Rows are records.
+- Reads fetch the tabs a page needs in **one** API request and cache them
+  for a few seconds (10 s for the user list) to stay inside Google's quota.
+- Writes re-read the affected tabs, apply the change, and save it in **one
+  atomic** request. Excel imports and seeding run as a single batch.
+- Cascade / set-null / restrict rules on delete are enforced by the app.
+- You can open the Sheet and read or fix data by hand. Don't rename the tabs
+  or the header row, and keep the `id` column filled in. Extra columns you
+  add are left alone.
+- Generated RC and invoice PDFs are built on the fly from the sheet data.
 
-If you'd rather use a different database, everything here is standard
-Prisma + Postgres, so any Postgres provider (Neon, Railway, RDS, etc.)
-works — just skip the storage steps and configure your own object storage
-(or leave `SUPABASE_SERVICE_ROLE_KEY` unset; PDF generation for RCs and
-invoices will simply be retried and marked unavailable in the UI until
-storage is configured).
+### Limits to know about
 
-## 1. Create your free Supabase project
+- **Speed:** each Google API call takes a few hundred milliseconds. Fine for a
+  small team; not for dozens of people editing at once.
+- **Quota:** Google allows about 60 read requests per minute for one service
+  account. The app batches and caches to stay well below that and retries with
+  backoff if it hits the limit.
+- **Concurrent saves:** there are no database transactions. Two people saving
+  at the very same instant on different servers could get the same LD-/RC-/INV-
+  number; the second save is rejected with a "already exists" message and can
+  be retried. Row edits are last-write-wins.
+- **Size:** a Google Sheet holds up to 10 million cells; that is many
+  thousands of loads, but the app reads whole tabs, so very large tabs get slow.
+- **Freshness:** other server instances may show data up to ~4 s old.
 
-1. Go to https://supabase.com and create a free account/project.
-2. In your project, go to **Settings → Database → Connection string → URI**.
-   - Copy the **Transaction pooler** connection string (port `6543`) →
-     this is your `DATABASE_URL`.
-   - Copy the **Session pooler / direct** connection string (port `5432`) →
-     this is your `DIRECT_URL` (Prisma uses this for migrations).
-   - Replace `[YOUR-PASSWORD]` with your database password (set when you
-     created the project).
-3. Go to **Settings → API** and copy:
-   - **Project URL** → `NEXT_PUBLIC_SUPABASE_URL`
-   - **service_role key** (not the anon key — this is a server-only secret)
-     → `SUPABASE_SERVICE_ROLE_KEY`
-4. Go to **Storage** and create a new **private** bucket named `documents`
-   (or any name — just set `SUPABASE_STORAGE_BUCKET` to match).
+## 1. Create the Google Sheet and service account (about 10 minutes)
+
+1. Create a new blank Google Sheet at https://sheets.new and copy its ID from
+   the URL (`https://docs.google.com/spreadsheets/d/<ID>/edit`).
+2. Go to https://console.cloud.google.com → create a project (free).
+3. **APIs & Services → Library** → enable **Google Sheets API**.
+4. **APIs & Services → Credentials → Create credentials → Service account**.
+   Name it (e.g. `haulwise`), finish, then open it → **Keys → Add key →
+   Create new key → JSON**. A `.json` file downloads.
+5. Open your Google Sheet → **Share** → paste the service account's email
+   (`...@...iam.gserviceaccount.com`) → give it **Editor**.
 
 ## 2. Configure environment variables
-
-Copy `.env.example` to `.env` and fill in the values from step 1:
 
 ```bash
 cp .env.example .env
 ```
 
-Generate a value for `NEXTAUTH_SECRET`:
+Set `GOOGLE_SHEET_ID`, paste the whole downloaded JSON key file (as one line)
+into `GOOGLE_SERVICE_ACCOUNT_JSON`, and generate `NEXTAUTH_SECRET`:
 
 ```bash
 openssl rand -base64 32
 ```
 
-## 3. Install dependencies and set up the database
+## 3. Install, create the tabs and load the demo data
 
 ```bash
 npm install
-npm run db:push     # creates all tables in your Supabase database
-npm run db:seed     # loads demo data (customers, carriers, drivers, loads)
+npm run db:setup    # checks access, creates the tabs and header rows
+npm run db:seed     # adds the first logins and demo customers/carriers/loads
 ```
 
 ## 4. Run the app
@@ -92,94 +100,56 @@ Visit http://localhost:3000 and log in with the seeded demo account:
 - **Email:** `admin@dispatchplatform.com`
 - **Password:** `password123`
 
-## 5. Deploying it for free
+## 5. Deploying it for free on Vercel
 
-The database (Supabase) is already hosted and free regardless of where the
-app itself runs. For the app, pick one:
+1. Push this repo to GitHub and import it at https://vercel.com (**Add New
+   Project**).
+2. Under **Environment Variables** add `GOOGLE_SHEET_ID`,
+   `GOOGLE_SERVICE_ACCOUNT_JSON` and `NEXTAUTH_SECRET`. Set `NEXTAUTH_URL`
+   to `https://<your-project>.vercel.app`.
+3. Click **Deploy**. The tabs and demo data are already in your Sheet from
+   step 3 (Vercel doesn't run `db:setup`/`db:seed`).
 
-### Option A — Vercel (recommended, easiest, free forever)
+Note: Vercel's free Hobby plan is meant for non-commercial use. If you need a
+free host that allows commercial use, Cloudflare Pages or any small VPS also
+works, since the app only needs Node.js and internet access to Google.
 
-Vercel is built by the Next.js team and needs no server administration —
-this is the fastest way to get a public URL.
+## Uploading signed Rate Confirmations (optional)
 
-1. Push this repo to GitHub (already done if you're reading this from the
-   repo).
-2. Go to https://vercel.com → sign in with GitHub → **Add New Project** →
-   import `dispatch-platform`.
-3. Before the first deploy, open **Environment Variables** and add every
-   value from `.env.example` (`DATABASE_URL`, `DIRECT_URL`,
-   `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-   `SUPABASE_STORAGE_BUCKET`, `NEXTAUTH_SECRET`). For `NEXTAUTH_URL`, use the
-   `https://<your-project>.vercel.app` URL Vercel will assign (you can see
-   it before the first deploy, or fix it after and redeploy).
-4. Click **Deploy**. Vercel runs `npm install` (which also runs
-   `prisma generate` automatically via the `postinstall` script) and
-   `npm run build`.
-5. From your own machine, run `npm run db:push && npm run db:seed` once
-   (pointed at the same `DATABASE_URL`) to create tables and demo data —
-   Vercel doesn't run this for you.
-6. Visit the Vercel URL and log in.
+Generated RC/invoice PDFs need no storage. Only the **Upload signed RC**
+feature keeps a file, in Google Drive. Google does not let a service account
+own files in a personal Drive, so this uses an OAuth refresh token for your
+own account:
 
-Free tier limits (hobby plan) are generous for a small team's dispatch
-tool; no credit card required.
+1. In the same Google Cloud project enable the **Google Drive API** and create
+   an **OAuth client ID** (type *Web application*, redirect URI
+   `https://developers.google.com/oauthplayground`).
+2. At https://developers.google.com/oauthplayground click the gear icon, tick
+   **Use your own OAuth credentials**, enter the client ID/secret, authorize
+   the scope `https://www.googleapis.com/auth/drive.file`, and exchange the
+   code for tokens. Copy the **refresh token**.
+3. Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `GOOGLE_OAUTH_REFRESH_TOKEN` (and optionally `GOOGLE_DRIVE_FOLDER_ID`).
 
-### Option B — a real free VPS (Oracle Cloud "Always Free")
-
-If you specifically want a VPS you control, Oracle Cloud's Always Free tier
-is the only major provider that stays free indefinitely (not just a trial),
-with real always-on compute (up to 4 ARM OCPUs / 24 GB RAM, or a small x86
-instance).
-
-1. Sign up at https://www.oracle.com/cloud/free/ (requires card
-   verification, but Always Free resources are never charged).
-2. **Create Instance**: shape `VM.Standard.A1.Flex` (Ampere/ARM, Always
-   Free) or `VM.Standard.E2.1.Micro` (x86, Always Free), image Ubuntu
-   22.04/24.04. Add your SSH key.
-3. In the instance's **Virtual Cloud Network → Security List**, add ingress
-   rules for ports `80` and `443` (and `22` for SSH, usually already open).
-4. SSH in and install Node.js 22, then clone and set up the app:
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
-   sudo apt-get install -y nodejs git nginx
-   git clone https://github.com/AbdulloxAbdujalilov9999/dispatch-platform.git
-   cd dispatch-platform
-   cp .env.example .env   # fill in the same Supabase values as above,
-                           # and set NEXTAUTH_URL to your domain or http://<server-ip>
-   npm install             # also runs prisma generate
-   npm run db:push
-   npm run db:seed
-   npm run build
-   ```
-5. Keep it running with pm2:
-   ```bash
-   sudo npm install -g pm2
-   pm2 start npm --name haulwise -- start
-   pm2 save
-   pm2 startup   # then run the command it prints
-   ```
-   By default `next start` listens on port 3000.
-6. Point Nginx at it so port 80 reaches your app (`sudo nano
-   /etc/nginx/sites-available/default`, replace the `location /` block with
-   `proxy_pass http://localhost:3000;`, then `sudo systemctl restart
-   nginx`). Add HTTPS for free with `sudo apt install certbot
-   python3-certbot-nginx && sudo certbot --nginx` if you have a domain
-   pointed at the server.
-7. Visit `http://<server-ip>` (or your domain) and log in.
-
-This path needs you to manage OS updates, restarts, and HTTPS yourself —
-Option A avoids all of that for the same $0 cost.
+Without these, the upload button returns a clear "Drive storage isn't
+configured" message and everything else keeps working.
 
 ## Project structure
 
 ```
-prisma/schema.prisma        Database schema (all entities & enums)
-prisma/seed.ts               Demo data
+src/lib/db/schema.ts         Tables/columns of the sheet database (one tab per model)
+src/lib/db/client.ts         Query engine (findMany/create/update/... over Sheets)
+src/lib/db/store.ts          Reading/caching tabs and writing changes to Sheets
+src/lib/db/google.ts         Service-account auth + Sheets REST calls with retry
+src/lib/prisma.ts            Exposes the client under the historical `prisma` name
+src/lib/storage.ts           Optional Google Drive storage for uploaded RCs
+scripts/setup-sheet.ts       Creates the tabs and checks access
+scripts/seed.ts              Demo data and first logins
 src/app/(app)/...            Authenticated dashboard pages (one folder per module)
 src/app/login                Login page
-src/app/api/...               REST API route handlers (CRUD for every module)
-src/components/ui             Design system primitives (Button, Card, Table, ...)
-src/components/<module>       Forms and module-specific UI
-src/lib                       Prisma client, auth config, Supabase storage, PDF generation, validation
+src/app/api/...              REST API route handlers (CRUD for every module)
+src/components/ui            Design system primitives (Button, Card, Table, ...)
+src/components/<module>      Forms and module-specific UI
 ```
 
 ## Modules included
@@ -187,33 +157,23 @@ src/lib                       Prisma client, auth config, Supabase storage, PDF 
 - **Dashboard** — KPIs, revenue chart, recent loads.
 - **Loads / dispatch board** — kanban board + list view, full load lifecycle
   (Booked → Dispatched → In Transit → Delivered → Invoiced), tracking
-  timeline per load.
+  timeline per load, Excel import/export.
 - **Carriers** — profiles, MC/DOT, insurance tracking, linked drivers/loads.
 - **Drivers** — profiles, license/truck/trailer info, linked to a carrier.
 - **Customers** — shipper profiles, linked loads/invoices.
-- **Rate Confirmations (RCs)** — generated as PDFs, stored in Supabase
-  Storage, status flow Draft → Sent → Signed.
+- **Rate Confirmations (RCs)** — PDFs generated on demand, or upload a signed
+  copy; status flow Draft → Sent → Signed.
 - **Invoices & Settlements** — customer invoices (PDF) and carrier pay
   settlements, with status tracking (Draft/Sent/Paid, Pending/Approved/Paid).
 - **Reports** — revenue vs. carrier cost, load volume by status, top
   carriers/customers.
 
-## Known `npm audit` finding
-
-`npm audit` reports a high-severity advisory for `deepmerge-ts` (stack
-exhaustion on recursive input), pulled in transitively by the `prisma` CLI's
-`@prisma/config` package. This only affects the `prisma` command-line tool
-used locally for `db:push`/`db:migrate`/`db:seed`/`studio` — it is a
-`devDependency` and is not part of `@prisma/client`, so it is never bundled
-into the running app. No fixed release exists upstream yet; it will resolve
-itself on the next `prisma` patch, at which point `npm update prisma` picks
-it up.
-
 ## Notes on going to production
 
-- Change the seeded demo password immediately, or delete the seed users and
+- Change the seeded demo passwords immediately, or delete the seed users and
   create real ones.
 - `NEXTAUTH_URL` must be set to your deployed URL in production.
-- The Supabase Storage bucket should stay **private**; the app mints
-  short-lived signed URLs to view/download PDFs rather than exposing public
-  links.
+- Keep the Google Sheet private: share it only with the service account and
+  the people who should be able to read all company data (it contains
+  password hashes).
+- Never commit `.env` or the service-account JSON key.

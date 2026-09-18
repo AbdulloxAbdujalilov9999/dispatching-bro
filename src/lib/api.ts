@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
 import { authOptions } from "@/lib/auth";
 import { ZodError } from "zod";
 

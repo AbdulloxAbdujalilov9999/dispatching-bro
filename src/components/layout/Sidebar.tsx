@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canAccess, type Section } from "@/lib/permissions";
-import type { Role } from "@prisma/client";
+import type { Role } from "@/lib/db/types";
 
 const nav: { href: string; label: string; icon: typeof LayoutDashboard; section: Section }[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, section: "dashboard" },

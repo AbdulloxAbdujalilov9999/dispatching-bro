@@ -51,105 +51,110 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const [customers, carriers, drivers, existingLoads] = await Promise.all([
-    prisma.customer.findMany({ select: { id: true, name: true } }),
-    prisma.carrier.findMany({ select: { id: true, name: true } }),
-    prisma.driver.findMany({ select: { id: true, name: true } }),
-    prisma.load.findMany({
-      where: { referenceNumber: { in: parsed.rows.map((r) => r.referenceNumber).filter(Boolean) } },
-      select: { id: true, referenceNumber: true },
-    }),
-  ]);
-
-  const customerMap = new Map(customers.map((c) => [c.name.toLowerCase(), c.id]));
-  const carrierMap = new Map(carriers.map((c) => [c.name.toLowerCase(), c.id]));
-  const driverMap = new Map(drivers.map((d) => [d.name.toLowerCase(), d.id]));
-  const loadByRef = new Map(existingLoads.map((l) => [l.referenceNumber, l.id]));
-
-  async function resolveByName(
-    name: string,
-    map: Map<string, string>,
-    create: (name: string) => Promise<{ id: string }>
-  ): Promise<string | null> {
-    if (!name) return null;
-    const key = name.toLowerCase();
-    const existing = map.get(key);
-    if (existing) return existing;
-    const created = await create(name);
-    map.set(key, created.id);
-    return created.id;
-  }
-
   let created = 0;
   let updated = 0;
   const errors: RowError[] = [];
 
-  for (const row of parsed.rows) {
-    try {
-      await importRow(row);
-    } catch (err) {
-      errors.push({ row: row.rowNumber, message: err instanceof Error ? err.message : "Import failed" });
-    }
-  }
-
-  async function importRow(row: ParsedLoadRow) {
-    if (!row.pickupLocation) throw new Error("Pickup Location is required");
-    if (!row.deliveryLocation) throw new Error("Delivery Location is required");
-    const pickupDate = row.pickupDate ? new Date(row.pickupDate) : null;
-    const deliveryDate = row.deliveryDate ? new Date(row.deliveryDate) : null;
-    if (!pickupDate || Number.isNaN(pickupDate.getTime())) throw new Error("Pickup Date is missing or invalid");
-    if (!deliveryDate || Number.isNaN(deliveryDate.getTime())) throw new Error("Delivery Date is missing or invalid");
-
-    const status = VALID_STATUSES.has(row.status) ? row.status : "BOOKED";
-
-    const [customerId, carrierId, driverId] = await Promise.all([
-      resolveByName(row.customer, customerMap, (name) => prisma.customer.create({ data: { name } })),
-      resolveByName(row.carrier, carrierMap, (name) => prisma.carrier.create({ data: { name } })),
-      resolveByName(row.driver, driverMap, (name) => prisma.driver.create({ data: { name } })),
+  // Google Sheets allows only a limited number of requests per minute, so the
+  // whole import runs as one batch: read each tab once, apply every row in
+  // memory, then write all the changes back in a single request.
+  await prisma.$batch(async () => {
+    const [customers, carriers, drivers, existingLoads] = await Promise.all([
+      prisma.customer.findMany({ select: { id: true, name: true } }),
+      prisma.carrier.findMany({ select: { id: true, name: true } }),
+      prisma.driver.findMany({ select: { id: true, name: true } }),
+      prisma.load.findMany({
+        where: { referenceNumber: { in: parsed.rows.map((r) => r.referenceNumber).filter(Boolean) } },
+        select: { id: true, referenceNumber: true },
+      }),
     ]);
 
-    const data = {
-      status: status as any,
-      customerId,
-      carrierId,
-      driverId,
-      pickupLocation: row.pickupLocation,
-      pickupDate,
-      deliveryLocation: row.deliveryLocation,
-      deliveryDate,
-      commodity: row.commodity || null,
-      weightLbs: row.weightLbs,
-      equipment: row.equipment || null,
-      customerRate: row.customerRate,
-      carrierRate: row.carrierRate,
-      notes: row.notes || null,
-    };
+    const customerMap = new Map(customers.map((c) => [c.name.toLowerCase(), c.id]));
+    const carrierMap = new Map(carriers.map((c) => [c.name.toLowerCase(), c.id]));
+    const driverMap = new Map(drivers.map((d) => [d.name.toLowerCase(), d.id]));
+    const loadByRef = new Map(existingLoads.map((l) => [l.referenceNumber, l.id]));
 
-    const existingId = row.referenceNumber ? loadByRef.get(row.referenceNumber) : undefined;
-
-    if (existingId) {
-      await prisma.load.update({ where: { id: existingId }, data });
-      updated++;
-      return;
+    async function resolveByName(
+      name: string,
+      map: Map<string, string>,
+      create: (name: string) => Promise<{ id: string }>
+    ): Promise<string | null> {
+      if (!name) return null;
+      const key = name.toLowerCase();
+      const existing = map.get(key);
+      if (existing) return existing;
+      const created = await create(name);
+      map.set(key, created.id);
+      return created.id;
     }
 
-    const referenceNumber = row.referenceNumber || (await nextSequenceNumber("LD"));
-    if (row.referenceNumber) {
-      const suffix = parseSequenceSuffix(row.referenceNumber);
-      if (suffix !== null) await bumpSequenceFloor("LD", suffix);
+    for (const row of parsed.rows) {
+      try {
+        await importRow(row);
+      } catch (err) {
+        errors.push({ row: row.rowNumber, message: err instanceof Error ? err.message : "Import failed" });
+      }
     }
 
-    const load = await prisma.load.create({
-      data: {
-        ...data,
-        referenceNumber,
-        createdById: session!.user.id,
-        trackingUpdates: { create: [{ status: status as any, location: row.pickupLocation, note: "Imported via Excel." }] },
-      },
-    });
-    loadByRef.set(referenceNumber, load.id);
-    created++;
-  }
+    async function importRow(row: ParsedLoadRow) {
+      if (!row.pickupLocation) throw new Error("Pickup Location is required");
+      if (!row.deliveryLocation) throw new Error("Delivery Location is required");
+      const pickupDate = row.pickupDate ? new Date(row.pickupDate) : null;
+      const deliveryDate = row.deliveryDate ? new Date(row.deliveryDate) : null;
+      if (!pickupDate || Number.isNaN(pickupDate.getTime())) throw new Error("Pickup Date is missing or invalid");
+      if (!deliveryDate || Number.isNaN(deliveryDate.getTime())) throw new Error("Delivery Date is missing or invalid");
+
+      const status = VALID_STATUSES.has(row.status) ? row.status : "BOOKED";
+
+      const [customerId, carrierId, driverId] = await Promise.all([
+        resolveByName(row.customer, customerMap, (name) => prisma.customer.create({ data: { name } })),
+        resolveByName(row.carrier, carrierMap, (name) => prisma.carrier.create({ data: { name } })),
+        resolveByName(row.driver, driverMap, (name) => prisma.driver.create({ data: { name } })),
+      ]);
+
+      const data = {
+        status: status as any,
+        customerId,
+        carrierId,
+        driverId,
+        pickupLocation: row.pickupLocation,
+        pickupDate,
+        deliveryLocation: row.deliveryLocation,
+        deliveryDate,
+        commodity: row.commodity || null,
+        weightLbs: row.weightLbs,
+        equipment: row.equipment || null,
+        customerRate: row.customerRate,
+        carrierRate: row.carrierRate,
+        notes: row.notes || null,
+      };
+
+      const existingId = row.referenceNumber ? loadByRef.get(row.referenceNumber) : undefined;
+
+      if (existingId) {
+        await prisma.load.update({ where: { id: existingId }, data });
+        updated++;
+        return;
+      }
+
+      const referenceNumber = row.referenceNumber || (await nextSequenceNumber("LD"));
+      if (row.referenceNumber) {
+        const suffix = parseSequenceSuffix(row.referenceNumber);
+        if (suffix !== null) await bumpSequenceFloor("LD", suffix);
+      }
+
+      const load = await prisma.load.create({
+        data: {
+          ...data,
+          referenceNumber,
+          createdById: session!.user.id,
+          trackingUpdates: { create: [{ status: status as any, location: row.pickupLocation, note: "Imported via Excel." }] },
+        },
+      });
+      loadByRef.set(referenceNumber, load.id);
+      created++;
+    }
+  }, ["customer", "carrier", "driver", "load", "trackingUpdate", "sequenceCounter"]);
 
   return NextResponse.json({
     totalRows: parsed.rows.length,

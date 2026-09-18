@@ -1,45 +1,7 @@
-import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
-
-const prisma = new PrismaClient();
-
-function maxSuffix(values: string[]): number {
-  let max = 10000;
-  for (const value of values) {
-    const match = value.match(/(\d+)$/);
-    if (match) max = Math.max(max, parseInt(match[1], 10));
-  }
-  return max;
-}
-
-async function primeSequenceCounter(prefix: string, atLeast: number) {
-  await prisma.$executeRaw`
-    INSERT INTO sequence_counters (key, value)
-    VALUES (${prefix}, ${atLeast})
-    ON CONFLICT (key) DO UPDATE SET value = GREATEST(sequence_counters.value, EXCLUDED.value)
-  `;
-}
-
-// Keeps the atomic reference-number counters (used by the app for new
-// loads/RCs/invoices) caught up with whatever's already in the database, so
-// the very first auto-generated number after this counter table was added
-// can't collide with an existing one. Safe to run every time.
-async function syncSequenceCounters() {
-  const [loads, rcs, invoices] = await Promise.all([
-    prisma.load.findMany({ select: { referenceNumber: true } }),
-    prisma.rateConfirmation.findMany({ select: { rcNumber: true } }),
-    prisma.invoice.findMany({ select: { invoiceNumber: true } }),
-  ]);
-  await Promise.all([
-    primeSequenceCounter("LD", maxSuffix(loads.map((l) => l.referenceNumber))),
-    primeSequenceCounter("RC", maxSuffix(rcs.map((r) => r.rcNumber))),
-    primeSequenceCounter("INV", maxSuffix(invoices.map((i) => i.invoiceNumber))),
-  ]);
-}
+import { prisma } from "@/lib/prisma";
 
 async function main() {
-  await syncSequenceCounters();
-
   const passwordHash = await bcrypt.hash("password123", 10);
 
   const admin = await prisma.user.upsert({
@@ -304,7 +266,9 @@ async function main() {
   console.log("Owner admin login: abdujalilov7707@gmail.com / Haulwise2026!  (change this password after first login)");
 }
 
-main()
+// Everything runs as one batch: Google Sheets is read once and written once.
+prisma
+  .$batch(main)
   .catch((e) => {
     console.error(e);
     process.exit(1);
