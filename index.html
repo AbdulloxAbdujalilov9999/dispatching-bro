@@ -145,6 +145,11 @@ label.f { display:block; font-size:12.5px; font-weight:600; color:var(--soft); m
 .hbar { margin:0 0 12px; } .hbar .r { display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px; } .hbar .t { height:8px; border-radius:9px; background:var(--panel2); overflow:hidden; } .hbar .t i { display:block; height:100%; background:var(--brand); border-radius:9px; }
 .legend { display:flex; gap:14px; font-size:12px; color:var(--soft); margin-bottom:6px; } .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; background:var(--brand); } .legend i.alt { background:color-mix(in srgb,var(--brand) 35%,var(--panel2)); }
 
+/* access-code screen */
+.lock { position:fixed; inset:0; background:var(--bg); display:grid; place-items:center; z-index:300; padding:16px; }
+.lock .card { width:100%; max-width:380px; padding:26px; } .lock h1 { font-size:20px; margin:12px 0 4px; } .lock .err { color:var(--bad); margin:8px 0 0; min-height:1.2em; }
+#saving { color:var(--brand); font-weight:600; min-height:1.2em; }
+
 /* printable documents */
 .doc { background:#fff; color:#111; padding:34px; border-radius:8px; border:1px solid #ddd; font-size:13px; }
 .doc h1 { font-size:22px; margin-bottom:2px; } .doc .sub { color:#666; }
@@ -182,54 +187,70 @@ label.f { display:block; font-size:12.5px; font-weight:600; color:var(--soft); m
    1. CONFIG
    ===================================================================== */
 const CONFIG = {
-  adapter: "local",                 // "local" = this browser only. Change to your own adapter (see section 2).
-  storageKey: "haulwise-dispatch-v1"
+  // Your Google Apps Script web-app URL (ends in /exec). See README.md. You can also paste it
+  // in Settings → Google Sheets. Leave empty to keep data in this browser only.
+  sheetsUrl: "",
+  storageKey: "haulwise-dispatch-v2"
 };
+const SHEETS_URL = (localStorage.getItem("hw-sheets-url") || CONFIG.sheetsUrl || "").trim();
 
 /* =====================================================================
    2. DATABASE ADAPTER  — the ONLY part that talks to a database.
    ---------------------------------------------------------------------
-   An adapter is an object with four async methods. Rows are plain objects
-   that always have an `id` (string). Tables: customers, carriers, drivers,
-   loads, rcs, invoices, settlements.
+   An adapter has two async methods:
 
-     list(table)              -> Promise<row[]>
-     create(table, row)       -> Promise<row>          (row already has its id)
-     update(table, id, patch) -> Promise<void>
-     remove(table, id)        -> Promise<void>
+     loadAll()   -> { customers:[…], carriers:[…], drivers:[…], loads:[…],
+                      tracking:[…], invoices:[…], settlements:[…] }
+     save(ops)   -> saves a batch of changes, in order:
+                      {op:"create", table, row}
+                      {op:"update", table, id, patch}
+                      {op:"remove", table, id}
 
-   Note: a load has a `tracking` array of {status, location, note, at}.
-   Store it as a JSON/array column (Firestore/Supabase jsonb) or as a JSON
-   string in a Google Sheet cell (JSON.stringify / JSON.parse in the adapter).
-
-   To use another database, add an entry to `adapters` below, e.g.
-
-     supabase: {
-       async list(t)          { const r = await fetch(`${URL}/rest/v1/${t}?select=*`, {headers:H}); return r.json(); },
-       async create(t,row)    { await fetch(`${URL}/rest/v1/${t}`, {method:"POST", headers:{...H,"Content-Type":"application/json"}, body:JSON.stringify(row)}); return row; },
-       async update(t,id,p)   { await fetch(`${URL}/rest/v1/${t}?id=eq.${id}`, {method:"PATCH", headers:{...H,"Content-Type":"application/json"}, body:JSON.stringify(p)}); },
-       async remove(t,id)     { await fetch(`${URL}/rest/v1/${t}?id=eq.${id}`, {method:"DELETE", headers:H}); }
-     }
-
-   then set CONFIG.adapter to its name. Firebase (Firestore) and Google
-   Sheets (via an Apps Script web app) follow the same four methods.
+   "sheets" sends them to the Google Apps Script in apps-script/Code.gs, which keeps
+   one tab per table. "local" keeps everything in this browser (used until a Sheets
+   URL is set). Each user action is sent as ONE batch, so a save is a single request.
    ===================================================================== */
+function applyOps(data, ops) {
+  for (const o of ops) {
+    const rows = (data[o.table] ||= []);
+    if (o.op === "create") rows.push(o.row);
+    else if (o.op === "update") { const r = rows.find(x => x.id === o.id); if (r) Object.assign(r, o.patch); }
+    else if (o.op === "remove") { const i = rows.findIndex(x => x.id === o.id); if (i >= 0) rows.splice(i, 1); }
+  }
+}
 const adapters = {
   local: {
-    _read()   { try { return JSON.parse(localStorage.getItem(CONFIG.storageKey)) || {}; } catch { return {}; } },
-    _write(d) { localStorage.setItem(CONFIG.storageKey, JSON.stringify(d)); },
-    async list(t)          { return this._read()[t] || []; },
-    async create(t, row)   { const d = this._read(); (d[t] ||= []).push(row); this._write(d); return row; },
-    async update(t, id, p) { const d = this._read(); const r = (d[t] || []).find(x => x.id === id); if (r) Object.assign(r, p); this._write(d); },
-    async remove(t, id)    { const d = this._read(); d[t] = (d[t] || []).filter(x => x.id !== id); this._write(d); }
+    name: "local",
+    async loadAll() { try { return JSON.parse(localStorage.getItem(CONFIG.storageKey)) || {}; } catch { return {}; } },
+    async save(ops) { const d = await this.loadAll(); applyOps(d, ops); localStorage.setItem(CONFIG.storageKey, JSON.stringify(d)); }
+  },
+  sheets: {
+    name: "sheets",
+    async call(payload) {
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 60000);
+      try {
+        // text/plain keeps this a "simple" request, so the browser doesn't need a CORS preflight
+        const res = await fetch(SHEETS_URL, { method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, signal: ctl.signal,
+          body: JSON.stringify({key: localStorage.getItem("hw-key") || "", ...payload}) });
+        let json; try { json = await res.json(); } catch { throw new Error("Google Sheets sent an unexpected reply. Check the web-app URL and that it is deployed for “Anyone”."); }
+        if (json.error) { const e = new Error(json.error === "unauthorized" ? "Wrong access code." : json.error); e.code = json.error === "unauthorized" ? "unauthorized" : "server"; throw e; }
+        return json;
+      } catch (e) {
+        if (e.name === "AbortError") throw new Error("Google Sheets took too long to respond.");
+        if (e instanceof TypeError) throw new Error("Couldn't reach Google Sheets. Check your connection and the web-app URL.");
+        throw e;
+      } finally { clearTimeout(timer); }
+    },
+    async loadAll() { return (await this.call({action: "loadAll"})).data; },
+    async save(ops) { await this.call({action: "save", ops}); }
   }
 };
-const db = adapters[CONFIG.adapter];
+const db = SHEETS_URL ? adapters.sheets : adapters.local;
 
 /* =====================================================================
    3. STATE + HELPERS
    ===================================================================== */
-const TABLES = ["customers","carriers","drivers","loads","rcs","invoices","settlements"];
+const TABLES = ["customers","carriers","drivers","loads","tracking","invoices","settlements"];
 const state = Object.fromEntries(TABLES.map(t => [t, []]));
 const ui = { q:"", status:"", tab:"invoices", loadsView: localStorage.getItem("hw-loads-view") || "board" };
 const LOAD_STATUSES = ["BOOKED","DISPATCHED","IN_TRANSIT","DELIVERED","INVOICED","CANCELLED"];
@@ -269,37 +290,77 @@ function toast(msg, kind = "") {
   const el = document.createElement("div"); el.className = "toast " + kind; el.textContent = msg;
   $("#toast").appendChild(el); setTimeout(() => el.remove(), 3200);
 }
+
+/* Every user action runs inside act(): changes are applied to the screen at once and queued,
+   then saved to the database as ONE batch. If saving fails, the screen is reloaded from the database. */
+let queue = [], savingCount = 0, saveChain = Promise.resolve(), lastLoad = 0;
+function updateSaving() { const el = $("#saving"); if (el) el.textContent = savingCount ? "Saving…" : ""; }
+async function resync() { try { await loadAll(); } catch (e) { console.error(e); } }
 async function act(fn, okMsg) {
-  try { await fn(); if (okMsg) toast(okMsg); } catch (e) { console.error(e); toast(e.message || "Something went wrong", "error"); }
-  render();
+  queue = [];
+  try { await fn(); }
+  catch (e) {
+    console.error(e); const dirty = queue.length > 0; queue = [];
+    toast(e.message || "Something went wrong", "error");
+    if (e.code === "unauthorized") return showLogin("Wrong access code.");
+    if (dirty) await resync();
+    return render();
+  }
+  const ops = queue; queue = [];
+  render(); if (okMsg) toast(okMsg);
+  if (!ops.length) return;
+  savingCount++; updateSaving();
+  saveChain = saveChain.then(() => db.save(ops)).catch(async e => {
+    console.error(e); toast("Couldn't save: " + e.message, "error");
+    if (e.code === "unauthorized") showLogin("Wrong access code."); else { await resync(); render(); }
+  }).finally(() => { savingCount--; updateSaving(); });
 }
 
-/* write-through data helpers: the adapter is saved first, then memory */
-async function createRow(t, data) {
+/* Data helpers: change the in-memory state right away and queue the matching database operation.
+   The sheets also get readable name columns (customerName, route, …) so they make sense in Excel. */
+const nm = (t, id) => byId(t, id)?.name || "";
+const ref = id => byId("loads", id)?.ref || "";
+const DENORM = {
+  loads: r => ({customerName: nm("customers", r.customerId), carrierName: nm("carriers", r.carrierId), driverName: nm("drivers", r.driverId),
+                route: `${r.pickupLocation || ""} → ${r.deliveryLocation || ""}`, margin: Math.round((Number(r.customerRate || 0) - Number(r.carrierRate || 0)) * 100) / 100}),
+  drivers: r => ({carrierName: nm("carriers", r.carrierId)}),
+  tracking: r => ({loadRef: ref(r.loadId)}),
+  invoices: r => ({loadRef: ref(r.loadId), customerName: nm("customers", r.customerId)}),
+  settlements: r => ({loadRef: ref(r.loadId), carrierName: nm("carriers", r.carrierId)})
+};
+function createRow(t, data) {
   const now = new Date().toISOString();
-  const row = {id: uid(), createdAt: now, updatedAt: now, ...data};
-  await db.create(t, row); state[t].push(row); return row;
+  const base = {id: uid(), createdAt: now, updatedAt: now, ...data};
+  const row = {...base, ...(DENORM[t] ? DENORM[t](base) : {})};
+  state[t].push(row); queue.push({op: "create", table: t, row}); return row;
 }
-async function updateRow(t, id, patch) {
+function updateRow(t, id, patch) {
+  const cur = byId(t, id); if (!cur) return;
   const p = {...patch, updatedAt: new Date().toISOString()};
-  await db.update(t, id, p); Object.assign(byId(t, id), p);
+  Object.assign(p, DENORM[t] ? DENORM[t]({...cur, ...p}) : {});
+  Object.assign(cur, p); queue.push({op: "update", table: t, id, patch: p});
+  const fk = {customers: "customerId", carriers: "carrierId", drivers: "driverId"}[t];
+  if (fk && "name" in patch) for (const tb of ["loads", "drivers", "invoices", "settlements"])
+    for (const r of state[tb]) if (r[fk] === id && DENORM[tb]) { const d = DENORM[tb](r); if (Object.keys(d).some(k => d[k] !== r[k])) { Object.assign(r, d); queue.push({op: "update", table: tb, id: r.id, patch: d}); } }
+  return cur;
 }
-async function removeRow(t, id) { await db.remove(t, id); state[t] = state[t].filter(r => r.id !== id); }
-async function loadAll() { await Promise.all(TABLES.map(async t => { state[t] = await db.list(t); })); }
+function removeRow(t, id) { state[t] = state[t].filter(r => r.id !== id); queue.push({op: "remove", table: t, id}); }
+async function loadAll() { const data = await db.loadAll(); TABLES.forEach(t => { state[t] = data[t] || []; }); lastLoad = Date.now(); }
 
 function nextNumber(prefix, table, field) {
   let max = 10000;
   for (const r of state[table]) { const m = String(r[field] || "").match(/(\d+)$/); if (m) max = Math.max(max, +m[1]); }
   return `${prefix}-${max + 1}`;
 }
-const track = (status, location, note) => ({status, location: location || "", note: note || "", at: new Date().toISOString()});
+const trackOf = id => state.tracking.filter(t => t.loadId === id).sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+const addTrack = (loadId, status, location, note) => createRow("tracking", {loadId, status, location: location || "", note: note || "", at: new Date().toISOString()});
 
 /* =====================================================================
    4. ENTITY DEFINITIONS (forms + table columns)
    ===================================================================== */
 const STATUS_OPTS = {
   carrier:["ACTIVE","INACTIVE","PENDING_APPROVAL"], driver:["ACTIVE","INACTIVE","ON_LEAVE"],
-  rc:["DRAFT","SENT","SIGNED","VOID"], invoice:["DRAFT","SENT","PAID","OVERDUE","VOID"], settlement:["PENDING","APPROVED","PAID"]
+  invoice:["DRAFT","SENT","PAID","OVERDUE","VOID"], settlement:["PENDING","APPROVED","PAID"]
 };
 const loadLabel = l => `${l.ref} · ${l.pickupLocation} → ${l.deliveryLocation}`;
 const ENT = {
@@ -338,9 +399,6 @@ const ENT = {
             {k:"deliveryLocation",l:"Delivery location",req:1},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
             {k:"commodity",l:"Commodity"},{k:"equipment",l:"Equipment",t:"equip"},{k:"weightLbs",l:"Weight (lbs)",t:"number"},
             {k:"customerRate",l:"Customer rate ($)",t:"number",step:"0.01",def:0},{k:"carrierRate",l:"Carrier rate ($)",t:"number",step:"0.01",def:0},{k:"notes",l:"Notes",t:"textarea",full:1}] },
-  rcs: { title:"Rate confirmation", plural:"Rate confirmations", sub:"",
-    fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",req:1},{k:"rateAmount",l:"Rate ($)",t:"number",step:"0.01",req:1},
-            {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.rc,def:"DRAFT"},{k:"terms",l:"Terms",t:"textarea",full:1,def:"Payment due Net 30 from receipt of signed BOL and invoice."}] },
   invoices: { title:"Invoice", plural:"Invoices", sub:"",
     fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"customerId",l:"Bill to",t:"ref",ref:"customers",req:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.invoice,def:"DRAFT"},{k:"dueDate",l:"Due date",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}] },
@@ -393,38 +451,34 @@ async function saveEntity(table, id, data) {
     data.ref ||= nextNumber("LD", "loads", "ref");
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
     data.customerRate ??= 0; data.carrierRate ??= 0;
-    if (id) {
-      const old = byId("loads", id);
-      if (data.status !== old.status) data.tracking = [...(old.tracking || []), track(data.status, data.pickupLocation, `Status updated to ${label(data.status)}.`)];
-    } else data.tracking = [track(data.status || "BOOKED", data.pickupLocation, "Load created.")];
   }
-  if (!id) {
-    if (table === "rcs") data.rcNumber = nextNumber("RC", "rcs", "rcNumber");
-    if (table === "invoices") data.invoiceNumber = nextNumber("INV", "invoices", "invoiceNumber");
-  }
-  if (id) await updateRow(table, id, data);
-  else {
-    const row = await createRow(table, data);
-    if (table === "invoices" && data.loadId) await setLoadStatus(data.loadId, "INVOICED", "Invoice " + row.invoiceNumber + " created.");
+  if (!id && table === "invoices") data.invoiceNumber = nextNumber("INV", "invoices", "invoiceNumber");
+  if (id) {
+    const oldStatus = byId(table, id).status;
+    updateRow(table, id, data);
+    if (table === "loads" && data.status !== oldStatus) addTrack(id, data.status, data.pickupLocation, `Status updated to ${label(data.status)}.`);
+  } else {
+    const row = createRow(table, data);
+    if (table === "loads") addTrack(row.id, row.status, row.pickupLocation, "Load created.");
+    if (table === "invoices" && data.loadId) setLoadStatus(data.loadId, "INVOICED", "Invoice " + row.invoiceNumber + " created.");
   }
 }
 
-async function setLoadStatus(id, status, note, location) {
+function setLoadStatus(id, status, note, location) {
   const l = byId("loads", id); if (!l || l.status === status) return;
-  await updateRow("loads", id, {status, tracking: [...(l.tracking || []), track(status, location || l.pickupLocation, note || `Status updated to ${label(status)}.`)]});
+  updateRow("loads", id, {status});
+  addTrack(id, status, location || l.pickupLocation, note || `Status updated to ${label(status)}.`);
 }
 
 /* deletes honour the old database rules: loads cascade, carriers/customers with paperwork are protected */
-async function deleteEntity(table, id) {
-  if (table === "carriers" && (state.rcs.some(r => r.carrierId === id) || state.settlements.some(s => s.carrierId === id)))
-    throw new Error("This carrier has rate confirmations or settlements and can't be deleted.");
-  if (table === "customers" && state.invoices.some(i => i.customerId === id))
-    throw new Error("This customer has invoices and can't be deleted.");
-  if (table === "loads") for (const t of ["rcs", "invoices", "settlements"]) for (const r of state[t].filter(r => r.loadId === id)) await removeRow(t, r.id);
-  if (table === "carriers") { for (const d of state.drivers.filter(d => d.carrierId === id)) await updateRow("drivers", d.id, {carrierId: null}); for (const l of state.loads.filter(l => l.carrierId === id)) await updateRow("loads", l.id, {carrierId: null}); }
-  if (table === "customers") for (const l of state.loads.filter(l => l.customerId === id)) await updateRow("loads", l.id, {customerId: null});
-  if (table === "drivers") for (const l of state.loads.filter(l => l.driverId === id)) await updateRow("loads", l.id, {driverId: null});
-  await removeRow(table, id);
+function deleteEntity(table, id) {
+  if (table === "carriers" && state.settlements.some(s => s.carrierId === id)) throw new Error("This carrier has settlements and can't be deleted.");
+  if (table === "customers" && state.invoices.some(i => i.customerId === id)) throw new Error("This customer has invoices and can't be deleted.");
+  if (table === "loads") for (const t of ["tracking", "invoices", "settlements"]) for (const r of state[t].filter(r => r.loadId === id)) removeRow(t, r.id);
+  if (table === "carriers") { for (const d of state.drivers.filter(d => d.carrierId === id)) updateRow("drivers", d.id, {carrierId: null}); for (const l of state.loads.filter(l => l.carrierId === id)) updateRow("loads", l.id, {carrierId: null}); }
+  if (table === "customers") for (const l of state.loads.filter(l => l.customerId === id)) updateRow("loads", l.id, {customerId: null});
+  if (table === "drivers") for (const l of state.loads.filter(l => l.driverId === id)) updateRow("loads", l.id, {driverId: null});
+  removeRow(table, id);
 }
 
 /* =====================================================================
@@ -478,7 +532,6 @@ function pageDashboard() {
     <div class="card card-pad"><h2>Quick actions</h2><div class="actions" style="flex-direction:column;align-items:stretch">
       <button class="btn" data-action="new" data-table="loads">${icon("plus")}Book a new load</button>
       <button class="btn" data-action="new" data-table="carriers">${icon("plus")}Add a carrier</button>
-      <button class="btn" data-action="new" data-table="rcs">${icon("plus")}Generate a rate confirmation</button>
       <button class="btn" data-action="new" data-table="invoices">${icon("plus")}Create an invoice</button></div></div>
   </div>
   <div class="card" style="margin-top:16px"><div class="card-pad" style="padding-bottom:0;display:flex;justify-content:space-between"><h2>Recent loads</h2><a href="#/loads">View all</a></div>
@@ -516,7 +569,7 @@ function pageLoads() {
 function pageLoad(id) {
   const l = byId("loads", id);
   if (!l) return pageHead("Load not found", "") + empty("This load doesn't exist", "It may have been deleted.") + `<a href="#/loads">← Back to loads</a>`;
-  const rcs = state.rcs.filter(r => r.loadId === id), invs = state.invoices.filter(i => i.loadId === id), sets = state.settlements.filter(s => s.loadId === id);
+  const invs = state.invoices.filter(i => i.loadId === id), sets = state.settlements.filter(s => s.loadId === id);
   const margin = Number(l.customerRate) - Number(l.carrierRate);
   const docRow = (a, b, c) => `<div class="doc-row"><div>${a}</div><div class="actions">${b}${c || ""}</div></div>`;
   return `<p><a href="#/loads">← Loads</a></p>` +
@@ -534,10 +587,8 @@ function pageLoad(id) {
       <form data-form="tracking" data-id="${l.id}" class="grid" style="gap:8px;margin-bottom:16px">
         <div class="grid g2" style="gap:8px"><select class="select" name="status">${LOAD_STATUSES.map(s => `<option value="${s}" ${s === l.status ? "selected" : ""}>${label(s)}</option>`).join("")}</select>
         <input class="input" name="location" placeholder="Current location"></div><div style="display:flex;gap:8px"><input class="input" name="note" placeholder="Note (optional)"><button class="btn primary" type="submit">Add update</button></div></form>
-      <ul class="timeline">${[...(l.tracking || [])].reverse().map(t => `<li><div>${badge(t.status)} <span class="muted">${fmtDT(t.at)}</span></div><div>${esc(t.location || "")}${t.note ? ` — <span class="muted">${esc(t.note)}</span>` : ""}</div></li>`).join("") || `<li class="muted">No updates yet.</li>`}</ul></div>
-    <div class="card card-pad"><h2>Documents</h2>
-      <div class="strong" style="margin-bottom:4px">Rate confirmations</div>${rcs.map(r => docRow(`${esc(r.rcNumber)} ${badge(r.status)}<div class="muted">${money(r.rateAmount)}</div>`, `<button class="btn sm" data-action="view-doc" data-kind="rc" data-id="${r.id}">View / Print</button>`)).join("") || `<div class="muted" style="padding:6px 0">None</div>`}
-      <button class="btn sm" style="margin:8px 0 14px" data-action="new" data-table="rcs" data-load="${l.id}">${icon("plus")}Rate confirmation</button>
+      <ul class="timeline">${trackOf(l.id).reverse().map(t => `<li><div>${badge(t.status)} <span class="muted">${fmtDT(t.at)}</span></div><div>${esc(t.location || "")}${t.note ? ` — <span class="muted">${esc(t.note)}</span>` : ""}</div></li>`).join("") || `<li class="muted">No updates yet.</li>`}</ul></div>
+    <div class="card card-pad"><h2>Invoices & settlements</h2>
       <div class="strong" style="margin-bottom:4px">Invoices</div>${invs.map(i => docRow(`${esc(i.invoiceNumber)} ${badge(invStatus(i))}<div class="muted">${money(i.amount)}</div>`, `<button class="btn sm" data-action="view-doc" data-kind="invoice" data-id="${i.id}">View / Print</button>`)).join("") || `<div class="muted" style="padding:6px 0">None</div>`}
       <button class="btn sm" style="margin:8px 0 14px" data-action="new" data-table="invoices" data-load="${l.id}">${icon("plus")}Invoice</button>
       <div class="strong" style="margin-bottom:4px">Settlements</div>${sets.map(s => docRow(`${money(s.amount)} ${badge(s.status)}`, "")).join("") || `<div class="muted" style="padding:6px 0">None</div>`}
@@ -548,18 +599,6 @@ function pageEntity(key) {
   const E = ENT[key], rows = [...state[key]].sort(newest).filter(matchQ);
   return pageHead(E.plural, E.sub, newBtn(key, "New " + E.title.toLowerCase())) + `<div class="toolbar">${searchBox("Search " + E.plural.toLowerCase() + "…")}</div>
     <div class="card">${table(E.cols, rows, {emptyTitle: "No " + E.plural.toLowerCase() + " yet", emptySub: "Click “New” to add one.", actions: r => editDel(key, r.id)})}</div>`;
-}
-
-function pageRcs() {
-  const rows = [...state.rcs].sort(newest).filter(r => !ui.q || [r.rcNumber, byId("loads", r.loadId)?.ref, nameOf("carriers", r.carrierId)].join(" ").toLowerCase().includes(ui.q.toLowerCase()));
-  const cols = [{h: "RC #", c: r => `<span class="strong">${esc(r.rcNumber)}</span>`}, {h: "Load", c: r => { const l = byId("loads", r.loadId); return l ? `<a href="#/loads/${l.id}">${esc(l.ref)}</a>` : "—"; }},
-    {h: "Carrier", c: r => esc(nameOf("carriers", r.carrierId))}, {h: "Amount", cls: "nowrap", c: r => money(r.rateAmount)}, {h: "Status", c: r => badge(r.status)}, {h: "Created", c: r => fmtDate(r.createdAt)}];
-  return pageHead("Rate confirmations", "Rate agreements between you and your carriers.", newBtn("rcs", "New rate confirmation")) + `<div class="toolbar">${searchBox("Search RCs…")}</div>
-  <div class="card">${table(cols, rows, {emptyTitle: "No rate confirmations yet", emptySub: "Create one from a load.", actions: r =>
-    `<button class="btn sm" data-action="view-doc" data-kind="rc" data-id="${r.id}">View / Print</button>` +
-    (r.status === "DRAFT" ? `<button class="btn sm" data-action="rc-status" data-id="${r.id}" data-s="SENT">Mark sent</button>` : "") +
-    (r.status === "SENT" ? `<button class="btn sm" data-action="rc-status" data-id="${r.id}" data-s="SIGNED">Mark signed</button>` : "") +
-    `<button class="btn sm" data-action="edit" data-table="rcs" data-id="${r.id}">Edit</button><button class="btn sm danger" data-action="delete" data-table="rcs" data-id="${r.id}">Delete</button>`})}</div>`;
 }
 
 function pageInvoices() {
@@ -606,7 +645,11 @@ function pageSettings() {
       <div><label class="f">Phone</label><input class="input" name="phone" value="${esc(s.phone)}"></div><div><label class="f">Email</label><input class="input" name="email" value="${esc(s.email)}"></div>
       <div class="full"><button class="btn primary" type="submit">Save</button></div></div></form></div>
   <div class="grid" style="align-content:start"><div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>
-  <div class="card card-pad"><h2>Data</h2><p class="muted" style="margin-top:-6px">Storage: <b>${esc(CONFIG.adapter)}</b>${CONFIG.adapter === "local" ? " (this browser only — connect a database to share data between users)" : ""}.</p>
+  <div class="card card-pad"><h2>Google Sheets</h2>
+    <p class="muted" style="margin-top:-6px">${SHEETS_URL ? "Connected — every change is saved to your spreadsheet." : "Not connected — data is only saved in this browser."}</p>
+    <form data-form="sheets"><label class="f">Web app URL</label><input class="input" name="url" value="${esc(SHEETS_URL)}" placeholder="https://script.google.com/macros/s/…/exec">
+    <div class="actions" style="margin-top:10px"><button class="btn primary" type="submit">Save &amp; reload</button>${SHEETS_URL ? '<button class="btn" type="button" data-action="refresh">Refresh now</button><button class="btn" type="button" data-action="forget-code">Change access code</button>' : ""}</div></form></div>
+  <div class="card card-pad"><h2>Data</h2><p class="muted" style="margin-top:-6px">Backups and demo data.</p>
     <div class="actions"><button class="btn" data-action="seed">Load demo data</button><button class="btn" data-action="json-export">Backup (JSON)</button><button class="btn" data-action="json-import">Restore backup</button><button class="btn danger" data-action="wipe">Delete all data</button></div></div></div></div>`;
 }
 
@@ -615,14 +658,6 @@ function pageSettings() {
    ===================================================================== */
 function docHtml(kind, id) {
   const s = settings(), co = `<div class="strong">${esc(s.company)}</div><div>${esc(s.address)}</div><div>${esc([s.phone, s.email].filter(Boolean).join(" · "))}</div>`;
-  if (kind === "rc") {
-    const r = byId("rcs", id), l = byId("loads", r.loadId) || {}, c = byId("carriers", r.carrierId) || {};
-    return `<div class="doc"><div class="row"><div><h1>Rate Confirmation</h1><div class="sub">${esc(r.rcNumber)} · ${fmtDate(r.createdAt)}</div></div><div style="text-align:right">${co}</div></div>
-      <div class="row"><div><h3>Carrier</h3><div class="strong">${esc(c.name || "—")}</div><div>${esc(c.mcNumber || "")} ${esc(c.dotNumber || "")}</div><div>${esc(c.contactName || "")} ${esc(c.phone || "")}</div></div><div><h3>Load</h3><div class="strong">${esc(l.ref || "—")}</div><div>${esc(l.commodity || "")} ${esc(l.equipment ? "· " + l.equipment : "")}</div></div></div>
-      <table><tr><th>Pickup</th><th>Delivery</th></tr><tr><td>${esc(l.pickupLocation || "")}<br>${fmtDT(l.pickupDate)}</td><td>${esc(l.deliveryLocation || "")}<br>${fmtDT(l.deliveryDate)}</td></tr></table>
-      <div class="row"><div><h3>Agreed rate</h3><div class="total">${money(r.rateAmount)}</div></div><div><h3>Status</h3>${esc(label(r.status))}</div></div>
-      <h3>Terms</h3><p>${esc(r.terms || "")}</p><div class="sig"><div>Carrier signature / date</div><div>Dispatcher signature / date</div></div></div>`;
-  }
   const i = byId("invoices", id), l = byId("loads", i.loadId) || {}, c = byId("customers", i.customerId) || {};
   return `<div class="doc"><div class="row"><div><h1>Invoice</h1><div class="sub">${esc(i.invoiceNumber)} · ${fmtDate(i.createdAt)}</div></div><div style="text-align:right">${co}</div></div>
     <div class="row"><div><h3>Bill to</h3><div class="strong">${esc(c.name || "—")}</div><div>${esc(c.addressLine || "")}</div><div>${esc([c.city, c.state, c.zip].filter(Boolean).join(", "))}</div></div><div><h3>Due date</h3>${fmtDate(i.dueDate)}<h3 style="margin-top:10px">Status</h3>${esc(label(invStatus(i)))}</div></div>
@@ -640,15 +675,15 @@ function openModal(title, body, footer = "", wide = false) {
 }
 const closeModal = () => { $("#modal-root").innerHTML = ""; };
 
-const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["carriers", "Carriers"], ["drivers", "Drivers"], ["customers", "Customers"], ["rate-confirmations", "Rate Confirmations", "rcs"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["settings", "Settings"]];
+const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["carriers", "Carriers"], ["drivers", "Drivers"], ["customers", "Customers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["settings", "Settings"]];
 function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page || "dashboard", arg}; }
 
 function render() {
   const {page, arg} = route();
   $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${icon("carriers")}</div>Haulwise</div><nav class="nav">${NAV.map(([p, t, ic]) =>
-    `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}</a>`).join("")}</nav><div class="nav-foot">Storage: ${esc(CONFIG.adapter)}</div>`;
+    `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}</a>`).join("")}</nav><div class="nav-foot">${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : ""}</div></div>`;
   const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), carriers: () => pageEntity("carriers"), drivers: () => pageEntity("drivers"), customers: () => pageEntity("customers"),
-    "rate-confirmations": pageRcs, invoices: pageInvoices, reports: pageReports, settings: pageSettings};
+    invoices: pageInvoices, reports: pageReports, settings: pageSettings};
   $("#view").innerHTML = (pages[page] || pageDashboard)();
 }
 window.addEventListener("hashchange", () => { ui.q = ""; ui.status = ""; document.body.classList.remove("nav-open"); closeModal(); render(); window.scrollTo(0, 0); });
@@ -661,23 +696,24 @@ const ACTIONS = {
   close: closeModal,
   "close-bg": (d, e) => { if (e.target.classList.contains("modal-back")) closeModal(); },
   new: d => { const preset = {}; if (d.load) { const l = byId("loads", d.load); preset.loadId = l.id;
-      if (d.table === "rcs") { preset.carrierId = l.carrierId; preset.rateAmount = l.carrierRate; } if (d.table === "invoices") { preset.customerId = l.customerId; preset.amount = l.customerRate; }
+      if (d.table === "invoices") { preset.customerId = l.customerId; preset.amount = l.customerRate; }
       if (d.table === "settlements") { preset.carrierId = l.carrierId; preset.amount = l.carrierRate; } } openForm(d.table, null, preset); },
   edit: d => openForm(d.table, d.id),
   delete: d => { if (!confirm(`Delete this ${ENT[d.table].title.toLowerCase()}? This can't be undone.`)) return;
-    act(async () => { await deleteEntity(d.table, d.id); if (d.back) location.hash = "#/loads"; }, "Deleted"); },
+    act(() => { deleteEntity(d.table, d.id); if (d.back) location.hash = "#/loads"; }, "Deleted"); },
   view: d => { ui.loadsView = d.v; localStorage.setItem("hw-loads-view", d.v); render(); },
   tab: d => { ui.tab = d.v; render(); },
   theme: d => { setTheme(d.v); render(); },
-  "view-doc": d => openModal(d.kind === "rc" ? "Rate confirmation" : "Invoice", docHtml(d.kind, d.id), `<button class="btn" data-action="close">Close</button><button class="btn primary" data-action="print">Print / Save as PDF</button>`, true),
+  "view-doc": d => openModal("Invoice", docHtml(d.kind, d.id), `<button class="btn" data-action="close">Close</button><button class="btn primary" data-action="print">Print / Save as PDF</button>`, true),
   print: () => window.print(),
-  "rc-status": d => act(() => updateRow("rcs", d.id, d.s === "SENT" ? {status: "SENT", sentAt: new Date().toISOString()} : {status: "SIGNED", signedAt: new Date().toISOString()}), "Updated"),
   "set-status": d => act(() => updateRow(d.table, d.id, {status: d.s, ...(d.s === "PAID" ? {paidAt: new Date().toISOString()} : {})}), "Updated"),
   seed: () => { if (state.loads.length && !confirm("Add demo data on top of your existing data?")) return; act(seedDemo, "Demo data added"); },
-  wipe: () => { if (!confirm("Delete ALL data? This can't be undone.")) return; act(async () => { for (const t of [...TABLES].reverse()) for (const r of [...state[t]]) await removeRow(t, r.id); }, "All data deleted"); },
+  wipe: () => { if (!confirm("Delete ALL data? This can't be undone.")) return; act(() => { for (const t of [...TABLES].reverse()) for (const r of [...state[t]]) removeRow(t, r.id); }, "All data deleted"); },
   "csv-export": exportCSV, "csv-import": () => $("#csv-file").click(),
   "json-export": () => download(`haulwise-backup-${today()}.json`, JSON.stringify(state, null, 2), "application/json"),
-  "json-import": () => $("#json-file").click()
+  "json-import": () => $("#json-file").click(),
+  refresh: () => refresh(true),
+  "forget-code": () => { localStorage.removeItem("hw-key"); location.reload(); }
 };
 document.addEventListener("click", e => { const el = e.target.closest("[data-action]"); if (!el) return; const fn = ACTIONS[el.dataset.action]; if (fn) { if (el.tagName === "A") e.preventDefault(); fn(el.dataset, e); } });
 
@@ -688,8 +724,12 @@ document.addEventListener("submit", e => {
     act(async () => { await saveEntity(t, id || null, data); closeModal(); }, id ? "Saved" : "Created");
   } else if (f.dataset.form === "tracking") {
     const fd = new FormData(f), l = byId("loads", f.dataset.id);
-    act(async () => { const st = fd.get("status");
-      await updateRow("loads", l.id, {status: st, tracking: [...(l.tracking || []), track(st, fd.get("location"), fd.get("note"))]}); }, "Tracking updated");
+    act(() => { const st = fd.get("status"); updateRow("loads", l.id, {status: st}); addTrack(l.id, st, fd.get("location"), fd.get("note")); }, "Tracking updated");
+  } else if (f.dataset.form === "sheets") {
+    const url = new FormData(f).get("url").trim(); url ? localStorage.setItem("hw-sheets-url", url) : localStorage.removeItem("hw-sheets-url"); location.reload();
+  } else if (f.dataset.form === "login") {
+    const code = new FormData(f).get("code").trim(); if (!code) return;
+    localStorage.setItem("hw-key", code); $("#modal-root").innerHTML = ""; boot();
   } else if (f.dataset.form === "company") {
     localStorage.setItem("hw-settings", JSON.stringify(Object.fromEntries(new FormData(f)))); toast("Saved");
   }
@@ -704,7 +744,7 @@ document.addEventListener("change", e => {
   if (t.dataset.input === "status") { ui.status = t.value; render(); return; }
   const form = t.closest("#entity-form"); if (!form || t.name !== "loadId") return;    // picking a load pre-fills its carrier / customer / rate
   const l = byId("loads", t.value); if (!l) return; const {table: tb} = form.dataset, set = (n, v) => { if (form.elements[n] && v != null) form.elements[n].value = v; };
-  if (tb === "rcs" || tb === "settlements") { set("carrierId", l.carrierId || ""); set(tb === "rcs" ? "rateAmount" : "amount", l.carrierRate); }
+  if (tb === "settlements") { set("carrierId", l.carrierId || ""); set("amount", l.carrierRate); }
   if (tb === "invoices") { set("customerId", l.customerId || ""); set("amount", l.customerRate); }
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
@@ -749,15 +789,15 @@ async function importCSV(text) {
       pickupLocation: get(r, "Pickup Location"), pickupDate: pu.toISOString(), deliveryLocation: get(r, "Delivery Location"), deliveryDate: de.toISOString(), commodity: get(r, "Commodity") || null,
       weightLbs: get(r, "Weight (lbs)") ? Number(get(r, "Weight (lbs)")) : null, equipment: get(r, "Equipment") || null, customerRate: Number(get(r, "Customer Rate")) || 0, carrierRate: Number(get(r, "Carrier Rate")) || 0, notes: get(r, "Notes") || null};
     const existing = ref && state.loads.find(l => l.ref === ref);
-    if (existing) { await updateRow("loads", existing.id, data); updated++; }
-    else { await createRow("loads", {...data, ref: ref || nextNumber("LD", "loads", "ref"), tracking: [track(data.status, data.pickupLocation, "Imported from CSV.")]}); made++; }
+    if (existing) { updateRow("loads", existing.id, data); updated++; }
+    else { const row = createRow("loads", {...data, ref: ref || nextNumber("LD", "loads", "ref")}); addTrack(row.id, data.status, data.pickupLocation, "Imported from CSV."); made++; }
   }
   toast(`Imported: ${made} new, ${updated} updated${bad ? `, ${bad} skipped` : ""}`);
 }
 $("#csv-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (f) f.text().then(t => act(() => importCSV(t))); });
 $("#json-file").addEventListener("change", e => { const f = e.target.files[0]; e.target.value = ""; if (!f) return;
   f.text().then(t => act(async () => { const d = JSON.parse(t); if (!confirm("Restore this backup? Existing records with the same id are kept as they are.")) return;
-    for (const tb of TABLES) for (const r of d[tb] || []) if (r.id && !byId(tb, r.id)) { await db.create(tb, r); state[tb].push(r); } }, "Backup restored")); });
+    for (const tb of TABLES) for (const r of d[tb] || []) if (r.id && !byId(tb, r.id)) { state[tb].push(r); queue.push({op: "create", table: tb, row: r}); } }, "Backup restored")); });
 
 async function seedDemo() {
   const at = (days, h = 8) => { const d = addDays(days); d.setHours(h, 0, 0, 0); return d.toISOString(); };
@@ -767,16 +807,15 @@ async function seedDemo() {
   const kB = await createRow("carriers", {name: "Blue Horizon Logistics", mcNumber: "MC-771002", dotNumber: "DOT-3390211", contactName: "Robin Diaz", email: "robin@bluehorizon.example", phone: "555-663-9021", insuranceProvider: "Sentry Insurance", insuranceExpiry: addDays(20).toISOString().slice(0, 10), status: "ACTIVE"});
   const dA = await createRow("drivers", {name: "Marcus Reed", phone: "555-333-1122", email: "marcus.reed@example.com", licenseNumber: "IL-DL-88213", licenseExpiry: addDays(400).toISOString().slice(0, 10), truckNumber: "TRK-104", trailerNumber: "TRL-204", status: "ACTIVE", carrierId: kA.id});
   const dB = await createRow("drivers", {name: "Elena Cho", phone: "555-777-4433", email: "elena.cho@example.com", licenseNumber: "TX-DL-55219", licenseExpiry: addDays(120).toISOString().slice(0, 10), truckNumber: "TRK-220", trailerNumber: "TRL-330", status: "ACTIVE", carrierId: kB.id});
-  const mk = (o, hist) => createRow("loads", {ref: nextNumber("LD", "loads", "ref"), ...o, tracking: hist.map(([s, loc, note], i) => ({status: s, location: loc, note: note || "", at: new Date(Date.now() - (hist.length - i) * 6 * 3600e3).toISOString()}))});
+  const mk = (o, hist) => { const row = createRow("loads", {ref: nextNumber("LD", "loads", "ref"), ...o});
+    hist.forEach(([s, loc, note], i) => createRow("tracking", {loadId: row.id, status: s, location: loc || "", note: note || "", at: new Date(Date.now() - (hist.length - i) * 6 * 3600e3).toISOString()})); return row; };
   const l1 = await mk({status: "IN_TRANSIT", customerId: cA.id, carrierId: kA.id, driverId: dA.id, pickupLocation: "Chicago, IL", pickupDate: at(-1), deliveryLocation: "Columbus, OH", deliveryDate: at(1, 17), commodity: "Packaged Foods", weightLbs: 42000, equipment: "Dry Van", customerRate: 2200, carrierRate: 1850}, [["BOOKED", "Chicago, IL", "Load booked and confirmed."], ["DISPATCHED", "Chicago, IL", "Driver dispatched to pickup."], ["IN_TRANSIT", "Indianapolis, IN", "On schedule."]]);
   const l2 = await mk({status: "DELIVERED", customerId: cB.id, carrierId: kB.id, driverId: dB.id, pickupLocation: "Dallas, TX", pickupDate: at(-6, 9), deliveryLocation: "Austin, TX", deliveryDate: at(-6, 18), commodity: "Retail Goods", weightLbs: 18000, equipment: "Reefer", customerRate: 1100, carrierRate: 900}, [["BOOKED", "Dallas, TX"], ["DISPATCHED", "Dallas, TX"], ["IN_TRANSIT", "Waco, TX"], ["DELIVERED", "Austin, TX", "Delivered on time, POD received."]]);
   await mk({status: "BOOKED", customerId: cA.id, pickupLocation: "Milwaukee, WI", pickupDate: at(2), deliveryLocation: "Detroit, MI", deliveryDate: at(3, 14), commodity: "Auto Parts", weightLbs: 30000, equipment: "Flatbed", customerRate: 1750, carrierRate: 0}, [["BOOKED", "Milwaukee, WI", "Awaiting carrier assignment."]]);
   await mk({status: "DISPATCHED", customerId: cB.id, carrierId: kA.id, driverId: dA.id, pickupLocation: "Houston, TX", pickupDate: at(1), deliveryLocation: "Atlanta, GA", deliveryDate: at(3), commodity: "Building Materials", weightLbs: 44000, equipment: "Flatbed", customerRate: 3100, carrierRate: 2600}, [["BOOKED", "Houston, TX"], ["DISPATCHED", "Houston, TX", "Driver assigned."]]);
-  await createRow("rcs", {rcNumber: nextNumber("RC", "rcs", "rcNumber"), loadId: l1.id, carrierId: kA.id, rateAmount: 1850, status: "SIGNED", terms: "Payment due Net 30 from receipt of signed BOL and invoice."});
-  await createRow("rcs", {rcNumber: nextNumber("RC", "rcs", "rcNumber"), loadId: l2.id, carrierId: kB.id, rateAmount: 900, status: "SIGNED", terms: "Payment due Net 30 from receipt of signed BOL and invoice."});
   await createRow("invoices", {invoiceNumber: nextNumber("INV", "invoices", "invoiceNumber"), loadId: l2.id, customerId: cB.id, amount: 1100, status: "SENT", dueDate: addDays(25).toISOString().slice(0, 10)});
   await createRow("settlements", {loadId: l2.id, carrierId: kB.id, amount: 900, status: "APPROVED"});
-  await setLoadStatus(l2.id, "INVOICED", "Invoice created.");
+  setLoadStatus(l2.id, "INVOICED", "Invoice created.");
 }
 
 /* =====================================================================
@@ -784,7 +823,38 @@ async function seedDemo() {
    ===================================================================== */
 function setTheme(t) { document.documentElement.dataset.theme = t; localStorage.setItem("hw-theme", t); }
 setTheme(localStorage.getItem("hw-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
-loadAll().then(render).catch(e => { console.error(e); $("#view").innerHTML = pageHead("Couldn't load data", "") + empty("The database didn't respond", e.message); });
+
+function showLogin(msg = "") {
+  $("#modal-root").innerHTML = `<div class="lock"><div class="card"><div class="logo">${icon("carriers")}</div><h1>Haulwise Dispatch</h1>
+    <p class="muted" style="margin:0 0 14px">Enter the access code to open your dispatch sheet.</p>
+    <form data-form="login"><label class="f" for="code">Access code</label><input class="input" id="code" name="code" type="password" autocomplete="current-password" autofocus required>
+    <div class="err" role="alert">${esc(msg)}</div><button class="btn primary" style="width:100%;margin-top:6px" type="submit">Open</button></form></div></div>`;
+  setTimeout(() => $("#code")?.focus(), 30);
+}
+async function boot() {
+  if (SHEETS_URL && !localStorage.getItem("hw-key")) { render(); return showLogin(); }
+  render(); $("#view").innerHTML = `<div class="empty"><b>Loading…</b>${SHEETS_URL ? "Reading your Google Sheet." : ""}</div>`;
+  try { await loadAll(); render(); }
+  catch (e) {
+    console.error(e);
+    if (e.code === "unauthorized") { localStorage.removeItem("hw-key"); return showLogin("Wrong access code."); }
+    $("#view").innerHTML = pageHead("Couldn't load data", "") + empty("Couldn't reach the database", e.message) + `<button class="btn primary" onclick="boot()">Try again</button>`;
+  }
+}
+/* pick up other people's changes: when the tab is focused again, and every 2 minutes */
+async function refresh(force) {
+  if (!SHEETS_URL || savingCount || queue.length || (!force && Date.now() - lastLoad < 60000)) return;
+  try {
+    const before = JSON.stringify(state), data = await db.loadAll();
+    if (savingCount || queue.length) return;                       // the user changed something meanwhile: keep it
+    TABLES.forEach(t => { state[t] = data[t] || []; }); lastLoad = Date.now();
+    if (force) toast("Refreshed");
+    if (JSON.stringify(state) !== before && !$("#entity-form") && document.activeElement?.id !== "search") render();
+  } catch (e) { if (e.code === "unauthorized") showLogin("Wrong access code."); else if (force) toast(e.message, "error"); }
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+setInterval(() => { if (!document.hidden) refresh(); }, 120000);
+boot();
 </script>
 </body>
 </html>
