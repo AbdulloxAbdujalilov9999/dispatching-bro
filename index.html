@@ -2,8 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Haulwise Dispatch</title>
+<meta name="description" content="Freight dispatch: loads, brokers, carriers, drivers, invoices and reports.">
+<meta name="theme-color" id="theme-color" content="#f4f6fb">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Haulwise">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>
 /* ============================== THEME ============================== */
 :root {
@@ -166,6 +176,17 @@ body.local .refresh-btn { display:none; }
 .summary b { font-size:17px; display:block; } .summary span { color:var(--soft); font-size:12px; }
 .fdate { display:inline-flex; align-items:center; gap:6px; color:var(--soft); font-size:12px; } .fdate .input { width:auto; }
 
+.offline { position:sticky; top:0; z-index:35; background:var(--warn); color:#1a1200; text-align:center; padding:8px 14px; font-weight:600; font-size:13px; }
+.offline[hidden] { display:none; }
+.btn, .seg button, .nav a { touch-action: manipulation; }
+/* installed on a phone with a notch / home bar: keep content clear of it */
+@supports (padding: env(safe-area-inset-top)) {
+  .topbar { padding-top: calc(12px + env(safe-area-inset-top)); padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); }
+  .sidebar { padding-top: calc(18px + env(safe-area-inset-top)); padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+  .content { padding-bottom: calc(50px + env(safe-area-inset-bottom)); }
+  #toast { bottom: calc(20px + env(safe-area-inset-bottom)); }
+}
+
 /* printable documents */
 .doc { background:#fff; color:#111; padding:34px; border-radius:8px; border:1px solid #ddd; font-size:13px; }
 .doc h1 { font-size:22px; margin-bottom:2px; } .doc .sub { color:#666; }
@@ -184,6 +205,7 @@ body.local .refresh-btn { display:none; }
 <div id="app">
   <aside class="sidebar" id="sidebar"></aside>
   <div class="main">
+    <div class="offline" id="offline" role="status" hidden>You're offline — you can look around, but changes can't be saved until you're back online.</div>
     <div class="topbar">
       <button class="btn sm" data-action="nav-toggle" aria-label="Menu"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Menu</button>
       <strong>Haulwise Dispatch</strong>
@@ -316,15 +338,20 @@ let queue = [], savingCount = 0, saveChain = Promise.resolve(), lastLoad = 0;
 let busyMsg = "", refreshing = false;
 function updateSaving() { const el = $("#saving"); if (el) el.textContent = savingCount ? "Saving…" : busyMsg; }
 function setBusy(msg) { busyMsg = msg; updateSaving(); }
-async function resync() { try { await loadAll(); } catch (e) { console.error(e); } }
+async function resync(snap) {
+  try { await loadAll(); }
+  catch (e) { console.error(e); if (snap) { const before = JSON.parse(snap); TABLES.forEach(t => { state[t] = before[t] || []; }); } }   // couldn't re-read: undo the screen change
+}
 async function act(fn, okMsg) {
+  if (SHEETS_URL && !navigator.onLine) { toast("You're offline — reconnect to save changes.", "error"); return; }
+  const snap = SHEETS_URL ? JSON.stringify(state) : null;
   queue = [];
   try { await fn(); }
   catch (e) {
     console.error(e); const dirty = queue.length > 0; queue = [];
     toast(e.message || "Something went wrong", "error");
     if (e.code === "auth") return showAuth(e.message);
-    if (dirty) await resync();
+    if (dirty) await resync(snap);
     return render();
   }
   const ops = queue; queue = [];
@@ -333,7 +360,7 @@ async function act(fn, okMsg) {
   savingCount++; updateSaving();
   saveChain = saveChain.then(() => db.save(ops)).catch(async e => {
     console.error(e); toast("Couldn't save: " + e.message, "error");
-    if (e.code === "auth") showAuth(e.message); else { await resync(); render(); }
+    if (e.code === "auth") showAuth(e.message); else { await resync(snap); render(); }
   }).finally(() => { savingCount--; updateSaving(); });
 }
 
@@ -438,6 +465,18 @@ function signedIn(r) { localStorage.setItem("hw-token", r.token); me = r.user; o
 
 /* ---- sign in / request access screen ---- */
 let authMode = "signin"; const authDraft = {name: "", email: ""};
+/* ---- installable app, offline banner, service worker ---- */
+let installEvent = null;
+const isStandalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+function updateOffline() { const bar = $("#offline"); if (bar) bar.hidden = navigator.onLine; }
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); installEvent = e; if (me) render(); });     // the browser says "this can be installed"
+window.addEventListener("appinstalled", () => { installEvent = null; toast("Installed — find Haulwise on your home screen or in your apps."); if (me) render(); });
+window.addEventListener("offline", updateOffline);
+window.addEventListener("online", () => { updateOffline(); toast("Back online"); lastLoad = 0; refresh(); });
+if ("serviceWorker" in navigator && ["https:", "http:"].includes(location.protocol) && (location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname)))
+  addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(e => console.warn("Service worker not registered:", e)));
+
 function showAuth(msg = "", pending = false) {
   const signup = authMode === "signup", google = !!CONFIG.googleClientId;
   const isOwner = authDraft.email.trim().toLowerCase() === OWNER_EMAIL;
@@ -1036,9 +1075,14 @@ function pageSettings() {
     <div class="actions" style="margin-top:10px"><button class="btn primary" type="submit">Save &amp; reload</button>${ownerSheetUrl ? `<a class="btn" href="${esc(ownerSheetUrl)}" target="_blank" rel="noopener">Open the spreadsheet</a>` : ""}${SHEETS_URL ? '<button class="btn" type="button" data-action="refresh">Refresh now</button>' : ""}</div></form></div>` : "";
   const data = owner ? `<div class="card card-pad"><h2>Data</h2><p class="muted" style="margin-top:-6px">Backups and demo data (owner only).</p>
     <div class="actions"><button class="btn" data-action="seed">Load demo data</button><button class="btn" data-action="json-export">Backup (JSON)</button><button class="btn" data-action="json-import">Restore backup</button><button class="btn danger" data-action="wipe">Delete all data</button></div></div>` : "";
+  const installCard = `<div class="card card-pad"><h2>Install the app</h2>${
+    isStandalone() ? `<p class="muted" style="margin:0">✓ You're using the installed app.</p>`
+    : installEvent ? `<p class="muted" style="margin-top:-6px">Add Haulwise to your device: it opens in its own window and starts faster.</p><button class="btn primary" data-action="install">Install app</button>`
+    : isIOS() ? `<p class="muted" style="margin:0">On iPhone or iPad: tap the <b>Share</b> button in Safari, then <b>Add to Home Screen</b>.</p>`
+    : `<p class="muted" style="margin:0">Use your browser's menu: <b>Install app</b> (Chrome, Edge) or <b>Add to Home screen</b> (Android). If you don't see it, open this page in Chrome, Edge or Safari.</p>`}</div>`;
   return pageHead("Settings", "Your account, appearance and company details.") +
   `<div class="grid g2"><div class="grid" style="align-content:start">${account}${company}</div>
-  <div class="grid" style="align-content:start"><div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${data}</div></div>`;
+  <div class="grid" style="align-content:start">${installCard}<div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${data}</div></div>`;
 }
 
 /* =====================================================================
@@ -1071,7 +1115,7 @@ function render() {
   const pending = pendingCount();
   $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${icon("carriers")}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
     `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}</nav>
-    <div class="nav-foot">${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
+    <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
     ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
   const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), carriers: () => pageEntity("carriers"), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"),
     invoices: pageInvoices, reports: pageReports, team: pageTeam, settings: pageSettings};
@@ -1112,6 +1156,7 @@ const ACTIONS = {
   "json-export": () => download(`haulwise-backup-${today()}.json`, JSON.stringify(state, null, 2), "application/json"),
   "json-import": () => $("#json-file").click(),
   refresh: () => refresh(true),
+  install: async () => { if (!installEvent) return; const ev = installEvent; ev.prompt(); const choice = await ev.userChoice.catch(() => ({})); installEvent = null; if (choice.outcome === "accepted") toast("Installing…"); render(); },
   "sign-out": () => { localStorage.removeItem("hw-token"); localStorage.removeItem("hw-cache"); location.reload(); },
   "auth-mode": d => { authMode = d.v; showAuth(); },
   "team-refresh": () => { team.users = null; team.error = ""; render(); },
@@ -1266,11 +1311,11 @@ async function seedDemo() {
 /* =====================================================================
    11. START
    ===================================================================== */
-function setTheme(t) { document.documentElement.dataset.theme = t; localStorage.setItem("hw-theme", t); }
+function setTheme(t) { document.documentElement.dataset.theme = t; localStorage.setItem("hw-theme", t); $("#theme-color")?.setAttribute("content", t === "dark" ? "#080d1c" : "#f4f6fb"); }
 setTheme(localStorage.getItem("hw-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
 
 async function boot() {
-  document.body.classList.toggle("local", !SHEETS_URL);
+  document.body.classList.toggle("local", !SHEETS_URL); updateOffline();
   if (!SHEETS_URL) me = {email: "local", name: "This browser", role: "owner"};             // no backend: single-user local mode
   else if (!localStorage.getItem("hw-token")) { me = null; render(); return showAuth(); }
   const cached = SHEETS_URL ? readCache() : null;
@@ -1290,6 +1335,7 @@ async function boot() {
 /* pick up other people's changes: when the tab is focused again, and every 2 minutes */
 async function refresh(force) {
   if (!SHEETS_URL || refreshing) return;
+  if (!navigator.onLine) { if (force) toast("You're offline — showing your last saved data.", "error"); return; }
   if (!force && (savingCount || queue.length || Date.now() - lastLoad < 60000)) return;
   refreshing = true; setBusy("Updating…");
   document.querySelectorAll(".refresh-btn").forEach(b => { b.disabled = true; b.textContent = "↻ Updating…"; });

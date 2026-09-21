@@ -7,7 +7,7 @@ an email + password or with Google, and each role only sees what its job needs.
 
 **Modules:** dashboard, loads (drag-and-drop board + list, tracking timeline, route map),
 brokers, carriers, drivers, invoices & settlements, reports, team, settings
-(light/dark). Filters on the pages that need them, and a **Refresh** button. Invoices open as printable documents (Print → Save as PDF). Loads
+(light/dark). Filters on the pages that need them, a **Refresh** button, and it installs as an app. Invoices open as printable documents (Print → Save as PDF). Loads
 export/import as CSV.
 
 ## Accounts and roles
@@ -105,6 +105,27 @@ site picks changes up on Settings → Refresh now (or within ~2 minutes).
 3. The "Continue with Google" button now appears. Google proves who someone is;
    you still have to approve them. (Signing in with Google also voids any
    password someone else set earlier for that email.)
+
+## Install it as an app (PWA)
+
+The site is an installable web app: it gets its own icon and window and opens faster.
+
+* **Chrome / Edge (computer):** click **Install app** in the sidebar (or Settings → *Install the app*),
+  or the install icon in the address bar.
+* **Android (Chrome):** the same **Install app** button, or the browser menu → *Install app*.
+* **iPhone / iPad (Safari):** tap **Share → Add to Home Screen** (Apple gives websites no install button).
+
+Once installed, long-press / right-click the icon for shortcuts to **Loads** and **Drivers**.
+
+**Offline:** the app opens with no connection and shows the data from your last visit, with a banner.
+Changes need a connection — while offline, edits are refused with a message rather than half-saved,
+and if a save fails the screen change is undone. When you're back online it updates by itself.
+
+Files: `manifest.webmanifest` (name, icons, colours), `sw.js` (service worker: keeps the app page
+and icons for offline use; never touches Google Sheets, maps or sign-in requests), `icons/`.
+Installing needs **HTTPS** (Vercel provides it) or `localhost`. After deploying, you can check it in
+Chrome → DevTools → *Application* → *Manifest* / *Service Workers*, or run a Lighthouse "PWA" audit.
+If you change `sw.js`, bump `VERSION` at its top.
 
 ## Deploy the site on Vercel
 
