@@ -38,12 +38,12 @@ const HASH_ROUNDS = 1000;
 const ALL_ROLES = ["owner", "manager", "dispatcher", "accounting", "hr"];
 const ASSIGNABLE_ROLES = ["manager", "dispatcher", "accounting", "hr"];
 const LOADS_VIEW = ["owner", "manager", "dispatcher", "accounting"];
-const LOADS_EDIT = ["owner", "manager", "dispatcher"];
+const LOADS_EDIT = ["owner", "manager", "dispatcher", "accounting"];
 const MONEY = ["owner", "manager", "accounting"];
 const ACCESS = {
   loads:       { view: LOADS_VIEW, edit: LOADS_EDIT },
   tracking:    { view: LOADS_VIEW, edit: LOADS_EDIT },
-  brokers:     { view: LOADS_VIEW, edit: ["owner", "manager", "dispatcher", "accounting"] },
+  brokers:     { view: LOADS_VIEW, edit: LOADS_EDIT },
   carriers:    { view: ALL_ROLES,  edit: ["owner", "manager", "dispatcher", "hr"] },
   drivers:     { view: ["owner", "manager", "dispatcher", "hr"], edit: ["owner", "manager", "dispatcher", "hr"] },
   invoices:    { view: MONEY, edit: MONEY },
@@ -55,17 +55,18 @@ const DELETE = {
   loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner", "manager"],
   drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY, settlements: MONEY
 };
-// Accounting can't edit loads, but invoicing a load has to mark it INVOICED (+ a tracking note).
-const STATUS_ONLY = { accounting: ["loads", "tracking"] };
-const STATUS_ONLY_KEYS = ["status", "updatedAt", "brokerName", "carrierName", "driverName", "route", "margin"];
+// Loads and drivers belong to a dispatcher. Whoever creates a load is recorded as its dispatcher; only the
+// owner or a manager can assign a load or a driver to somebody else.
+const ASSIGNERS = ["owner", "manager"];
+const ASSIGN_KEYS = ["dispatcherEmail", "dispatcherName"];
 
 // One tab per table. `cols` is the column order used when a tab is first created;
 // any extra field the website sends is added as a new column automatically.
 const TABS = {
   brokers:     { sheet: "Brokers",     cols: ["name", "mcNumber", "dotNumber", "contactName", "phone", "email", "billingEmail", "addressLine", "city", "state", "zip", "paymentTerms", "notes", "id", "createdAt", "updatedAt"] },
   carriers:    { sheet: "Carriers",    cols: ["name", "mcNumber", "dotNumber", "contactName", "phone", "email", "status", "insuranceProvider", "insuranceExpiry", "notes", "id", "createdAt", "updatedAt"] },
-  drivers:     { sheet: "Drivers",     cols: ["name", "phone", "email", "carrierName", "licenseNumber", "licenseExpiry", "truckNumber", "trailerNumber", "status", "notes", "id", "carrierId", "createdAt", "updatedAt"] },
-  loads:       { sheet: "Loads",       cols: ["ref", "status", "brokerName", "carrierName", "driverName", "route", "pickupLocation", "pickupDate", "deliveryLocation", "deliveryDate", "commodity", "equipment", "weightLbs", "brokerRate", "carrierRate", "margin", "notes", "id", "brokerId", "carrierId", "driverId", "createdAt", "updatedAt"] },
+  drivers:     { sheet: "Drivers",     cols: ["name", "phone", "email", "carrierName", "dispatcherName", "licenseNumber", "licenseExpiry", "truckNumber", "trailerNumber", "status", "notes", "id", "carrierId", "dispatcherEmail", "createdAt", "updatedAt"] },
+  loads:       { sheet: "Loads",       cols: ["ref", "status", "brokerName", "dispatcherName", "carrierName", "driverName", "route", "miles", "brokerRate", "rpm", "carrierRate", "carrierRpm", "margin", "pickupLocation", "pickupDate", "deliveryLocation", "deliveryDate", "commodity", "equipment", "weightLbs", "notes", "id", "brokerId", "carrierId", "driverId", "dispatcherEmail", "pickupLat", "pickupLng", "deliveryLat", "deliveryLng", "createdAt", "updatedAt"] },
   tracking:    { sheet: "Tracking",    cols: ["loadRef", "at", "status", "location", "note", "id", "loadId", "createdAt", "updatedAt"] },
   invoices:    { sheet: "Invoices",    cols: ["invoiceNumber", "loadRef", "brokerName", "amount", "status", "dueDate", "paidAt", "notes", "id", "loadId", "brokerId", "createdAt", "updatedAt"] },
   settlements: { sheet: "Settlements", cols: ["loadRef", "carrierName", "amount", "status", "paidAt", "notes", "id", "loadId", "carrierId", "createdAt", "updatedAt"] }
@@ -106,7 +107,12 @@ function dispatch_(b) {
 
   var user = authenticate_(b.token);             // everything below needs a signed-in, approved user
   if (a === "me") return { user: publicUser_(user), sheetUrl: sheetUrlFor_(user) };
-  if (a === "loadAll") return withLock_(function () { return { user: publicUser_(user), sheetUrl: sheetUrlFor_(user), data: loadAll_(user) }; });
+  if (a === "loadAll") {
+    var res = { user: publicUser_(user), sheetUrl: sheetUrlFor_(user), data: loadAll_(user) };
+    if (user.role === "owner") res.users = allUsers_().map(publicUser_);     // saves the Team page a second request
+    if (ASSIGNERS.indexOf(user.role) >= 0) res.roster = roster_();           // who loads/drivers can be assigned to
+    return res;
+  }
   if (a === "save") return withLock_(function () { save_(user, b.ops || []); return { ok: true }; });
   if (a === "changePassword") return withLock_(function () { return changePassword_(user, b); });
 
@@ -152,6 +158,10 @@ function allUsers_() {
 }
 function newUser_(email, name, role, status) {
   return { id: Utilities.getUuid(), email: email, name: String(name || email).trim().slice(0, 100), role: role || "", status: status, salt: "", hash: "", rounds: HASH_ROUNDS, emailVerified: false, sv: 0, createdAt: new Date().toISOString() };
+}
+function roster_() {                                  // names only: no hashes, no status details
+  return allUsers_().filter(function (u) { return u.status === "active" && ["owner", "manager", "dispatcher"].indexOf(u.role) >= 0; })
+    .map(function (u) { return { email: u.email, name: u.name, role: u.role }; });
 }
 function publicUser_(u) {
   return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status, hasPassword: !!u.hash, emailVerified: !!u.emailVerified, createdAt: u.createdAt };
@@ -324,28 +334,31 @@ function out_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
+var SS_ = null, TAB_CACHE_ = null;                 // reused within one request (opening the spreadsheet is slow)
 function spreadsheet_() {
-  var id = PropertiesService.getScriptProperties().getProperty("SHEET_ID") || DEFAULT_SHEET_ID;
-  return SpreadsheetApp.openById(id);
+  if (!SS_) SS_ = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty("SHEET_ID") || DEFAULT_SHEET_ID);
+  return SS_;
+}
+function tab_(table) {
+  var def = TABS[table];
+  if (!def) throw new Error("Unknown table: " + table);
+  if (!TAB_CACHE_) { TAB_CACHE_ = {}; spreadsheet_().getSheets().forEach(function (sh) { TAB_CACHE_[sh.getName()] = sh; }); }
+  if (!TAB_CACHE_[def.sheet]) TAB_CACHE_[def.sheet] = spreadsheet_().insertSheet(def.sheet);
+  return TAB_CACHE_[def.sheet];
+}
+// Empty tab: (re)write the header row, so renamed columns (e.g. customer -> broker) take effect.
+function fixHeader_(sh, def, values) {
+  var have = (values[0] || []).map(String);
+  while (have.length && have[have.length - 1] === "") have.pop();
+  if (have.join("|") === def.cols.join("|")) return;
+  if (have.length) sh.getRange(1, 1, 1, Math.max(have.length, def.cols.length)).clearContent();
+  sh.getRange(1, 1, 1, def.cols.length).setNumberFormat("@").setValues([def.cols]).setFontWeight("bold");
+  sh.setFrozenRows(1);
 }
 
 function sheetFor_(table) {
-  var def = TABS[table];
-  if (!def) throw new Error("Unknown table: " + table);
-  var ss = spreadsheet_();
-  var sh = ss.getSheetByName(def.sheet);
-  if (!sh) sh = ss.insertSheet(def.sheet);
-  var last = sh.getLastRow();
-  if (last <= 1) {
-    // Empty tab: (re)write the header row, so renamed columns (e.g. customer -> broker) take effect.
-    var have = last === 0 ? [] : sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String);
-    while (have.length && have[have.length - 1] === "") have.pop();
-    if (have.join("|") !== def.cols.join("|")) {
-      if (last === 1) sh.getRange(1, 1, 1, Math.max(have.length, def.cols.length)).clearContent();
-      sh.getRange(1, 1, 1, def.cols.length).setNumberFormat("@").setValues([def.cols]).setFontWeight("bold");
-      sh.setFrozenRows(1);
-    }
-  }
+  var sh = tab_(table), values = sh.getDataRange().getValues();
+  if (values.length <= 1) fixHeader_(sh, TABS[table], values);
   return sh;
 }
 
@@ -360,10 +373,8 @@ function loadAll_(user) {
 }
 
 function readTable_(table) {
-  var sh = sheetFor_(table);
-  var last = sh.getLastRow();
-  if (last < 2) return [];
-  var values = sh.getRange(1, 1, last, sh.getLastColumn()).getValues();
+  var sh = tab_(table), values = sh.getDataRange().getValues();     // one read per tab
+  if (values.length <= 1) { fixHeader_(sh, TABS[table], values); return []; }
   var headers = values[0].map(String);
   var idIdx = headers.indexOf("id");
   if (idIdx < 0) return [];
@@ -387,15 +398,19 @@ function cell_(v) {
 
 // ops: [{op:"create", table, row}, {op:"update", table, id, patch}, {op:"remove", table, id}]
 function checkOps_(user, ops) {
+  var canAssign = ASSIGNERS.indexOf(user.role) >= 0;
   ops.forEach(function (o) {
     var acc = ACCESS[o.table];
     if (!acc || ["create", "update", "remove"].indexOf(o.op) < 0) fail_("bad", "Bad request");
     if (o.op === "remove" && DELETE[o.table].indexOf(user.role) < 0) fail_("forbidden", "Your role (" + user.role + ") can't delete " + o.table + ".");
-    if (acc.edit.indexOf(user.role) >= 0) return;
-    var statusOnly = (STATUS_ONLY[user.role] || []).indexOf(o.table) >= 0 && (
-      (o.op === "update" && Object.keys(o.patch || {}).every(function (k) { return STATUS_ONLY_KEYS.indexOf(k) >= 0; })) ||
-      (o.op === "create" && o.table === "tracking"));
-    if (!statusOnly) fail_("forbidden", "Your role (" + user.role + ") can't change " + o.table + ".");
+    if (acc.edit.indexOf(user.role) < 0) fail_("forbidden", "Your role (" + user.role + ") can't change " + o.table + ".");
+    if ((o.table === "loads" || o.table === "drivers") && !canAssign) {
+      if (o.op === "update" && ASSIGN_KEYS.some(function (k) { return k in (o.patch || {}); }))
+        fail_("forbidden", "Only the owner or a manager can change who a " + (o.table === "loads" ? "load" : "driver") + " is assigned to.");
+      if (o.op === "create" && o.table === "loads") { o.row.dispatcherEmail = user.email; o.row.dispatcherName = user.name; }   // always under your own name
+      if (o.op === "create" && o.table === "drivers" && ASSIGN_KEYS.some(function (k) { return o.row[k]; }))
+        fail_("forbidden", "Only the owner or a manager can assign a driver to a dispatcher.");
+    }
   });
 }
 
