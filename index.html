@@ -189,7 +189,7 @@ label.f { display:block; font-size:12.5px; font-weight:600; color:var(--soft); m
 const CONFIG = {
   // Your Google Apps Script web-app URL (ends in /exec). See README.md. You can also paste it
   // in Settings → Google Sheets. Leave empty to keep data in this browser only.
-  sheetsUrl: "",
+  sheetsUrl: "https://script.google.com/macros/s/AKfycbwyuuYwNBfULphLwf58KTxEsrIQ0HLt8913bC0-DNrUxweT0hGaYCGtusFwI1Rf_q0c6g/exec",
   storageKey: "haulwise-dispatch-v2"
 };
 const SHEETS_URL = (localStorage.getItem("hw-sheets-url") || CONFIG.sheetsUrl || "").trim();
@@ -232,7 +232,7 @@ const adapters = {
         // text/plain keeps this a "simple" request, so the browser doesn't need a CORS preflight
         const res = await fetch(SHEETS_URL, { method: "POST", headers: {"Content-Type": "text/plain;charset=utf-8"}, signal: ctl.signal,
           body: JSON.stringify({key: localStorage.getItem("hw-key") || "", ...payload}) });
-        let json; try { json = await res.json(); } catch { throw new Error("Google Sheets sent an unexpected reply. Check the web-app URL and that it is deployed for “Anyone”."); }
+        let json; try { json = await res.json(); } catch { throw new Error("Google sent back a web page instead of data. In Apps Script: paste the latest Code.gs, then Deploy → Manage deployments → Edit → New version, with access set to “Anyone”."); }
         if (json.error) { const e = new Error(json.error === "unauthorized" ? "Wrong access code." : json.error); e.code = json.error === "unauthorized" ? "unauthorized" : "server"; throw e; }
         return json;
       } catch (e) {
@@ -347,6 +347,12 @@ function updateRow(t, id, patch) {
 function removeRow(t, id) { state[t] = state[t].filter(r => r.id !== id); queue.push({op: "remove", table: t, id}); }
 async function loadAll() { const data = await db.loadAll(); TABLES.forEach(t => { state[t] = data[t] || []; }); lastLoad = Date.now(); }
 
+/* A typed customer name is matched to a saved customer (ignoring case/extra spaces) or saved as a new one,
+   so it shows up as a suggestion on every device the next time. */
+function ensureCustomer(name) {
+  const n = String(name || "").replace(/\s+/g, " ").trim(); if (!n) return null;
+  return (state.customers.find(c => c.name.toLowerCase() === n.toLowerCase()) || createRow("customers", {name: n})).id;
+}
 function nextNumber(prefix, table, field) {
   let max = 10000;
   for (const r of state[table]) { const m = String(r[field] || "").match(/(\d+)$/); if (m) max = Math.max(max, +m[1]); }
@@ -394,13 +400,13 @@ const ENT = {
           {h:"Loads",c:r=>state.loads.filter(l=>l.driverId===r.id).length}] },
   loads: { title:"Load", plural:"Loads", sub:"",
     fields:[{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
-            {k:"customerId",l:"Customer",t:"ref",ref:"customers"},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers"},{k:"driverId",l:"Driver",t:"ref",ref:"drivers",full:1},
+            {k:"customerInput",l:"Customer",t:"customer",ph:"Type the customer name"},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers"},{k:"driverId",l:"Driver",t:"ref",ref:"drivers",full:1},
             {k:"pickupLocation",l:"Pickup location",req:1},{k:"pickupDate",l:"Pickup date",t:"datetime-local",req:1},
             {k:"deliveryLocation",l:"Delivery location",req:1},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
             {k:"commodity",l:"Commodity"},{k:"equipment",l:"Equipment",t:"equip"},{k:"weightLbs",l:"Weight (lbs)",t:"number"},
             {k:"customerRate",l:"Customer rate ($)",t:"number",step:"0.01",def:0},{k:"carrierRate",l:"Carrier rate ($)",t:"number",step:"0.01",def:0},{k:"notes",l:"Notes",t:"textarea",full:1}] },
   invoices: { title:"Invoice", plural:"Invoices", sub:"",
-    fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"customerId",l:"Bill to",t:"ref",ref:"customers",req:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
+    fields:[{k:"loadId",l:"Load (the customer is taken from the load)",t:"ref",ref:"loads",req:1,full:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.invoice,def:"DRAFT"},{k:"dueDate",l:"Due date",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}] },
   settlements: { title:"Settlement", plural:"Settlements", sub:"",
     fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",req:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
@@ -419,7 +425,8 @@ function fieldHtml(f, val) {
     const rows = [...state[f.ref]].sort((a, b) => f.ref === "loads" ? newest(a, b) : (a.name || "").localeCompare(b.name || ""));
     ctl = `<select class="select" id="${id}" name="${f.k}" ${req}><option value="">${f.req ? "Select…" : "— None —"}</option>${rows.map(r =>
       `<option value="${r.id}" ${r.id === v ? "selected" : ""}>${esc(f.ref === "loads" ? loadLabel(r) : r.name)}</option>`).join("")}</select>`;
-  } else if (f.t === "equip") ctl = `<input class="input" id="${id}" name="${f.k}" list="equip-list" value="${esc(v)}"><datalist id="equip-list">${EQUIPMENT.map(e => `<option value="${e}">`).join("")}</datalist>`;
+  } else if (f.t === "customer") ctl = `<input class="input" id="${id}" name="${f.k}" list="customer-list" value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off" ${req}><datalist id="customer-list">${[...state.customers].sort((a, b) => a.name.localeCompare(b.name)).map(c => `<option value="${esc(c.name)}">`).join("")}</datalist>`;
+  else if (f.t === "equip") ctl = `<input class="input" id="${id}" name="${f.k}" list="equip-list" value="${esc(v)}"><datalist id="equip-list">${EQUIPMENT.map(e => `<option value="${e}">`).join("")}</datalist>`;
   else if (f.t === "datetime-local") ctl = `<input class="input" type="datetime-local" id="${id}" name="${f.k}" value="${esc(inputDT(v))}" ${req}>`;
   else ctl = `<input class="input" type="${f.t || "text"}" ${f.step ? `step="${f.step}"` : ""} ${f.t === "number" ? 'min="0"' : ""} id="${id}" name="${f.k}" value="${esc(v)}" placeholder="${esc(f.ph || "")}" ${req}>`;
   return `<div class="${f.full ? "full" : ""}">${lab}${ctl}</div>`;
@@ -427,8 +434,9 @@ function fieldHtml(f, val) {
 
 function openForm(table, id, preset = {}) {
   const E = ENT[table], row = id ? byId(table, id) : null;
-  const data = row || preset;
+  let data = row || preset;
   if (!row && table === "loads") { data.pickupDate ||= addDays(1).toISOString(); data.deliveryDate ||= addDays(2).toISOString(); }
+  if (table === "loads" && !("customerInput" in data)) data = {...data, customerInput: nm("customers", data.customerId)};
   if (!row && table === "invoices") data.dueDate ||= addDays(30).toISOString().slice(0, 10);
   const body = `<form id="entity-form" data-table="${table}" data-id="${id || ""}"><div class="form-grid">${E.fields.map(f => fieldHtml(f, data[f.k])).join("")}</div></form>`;
   openModal(`${row ? "Edit" : "New"} ${E.title.toLowerCase()}`, body,
@@ -451,6 +459,12 @@ async function saveEntity(table, id, data) {
     data.ref ||= nextNumber("LD", "loads", "ref");
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
     data.customerRate ??= 0; data.carrierRate ??= 0;
+    if ("customerInput" in data) { data.customerId = ensureCustomer(data.customerInput); delete data.customerInput; }
+  }
+  if (table === "invoices") {
+    const l = byId("loads", data.loadId);
+    if (!l?.customerId) throw new Error("This load has no customer yet. Edit the load and type the customer name first.");
+    data.customerId = l.customerId;
   }
   if (!id && table === "invoices") data.invoiceNumber = nextNumber("INV", "invoices", "invoiceNumber");
   if (id) {
