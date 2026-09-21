@@ -6,7 +6,7 @@ table is a tab you can open, filter and download as Excel. People sign in with
 an email + password or with Google, and each role only sees what its job needs.
 
 **Modules:** dashboard, loads (drag-and-drop board + list, tracking timeline, route map),
-brokers, carriers, drivers, invoices & settlements, reports, team, settings
+brokers, drivers, invoices & settlements, reports, team, settings
 (light/dark). Filters on the pages that need them, a **Refresh** button, and it installs as an app. Invoices open as printable documents (Print → Save as PDF). Loads
 export/import as CSV.
 
@@ -22,13 +22,15 @@ export/import as CSV.
 |---|---|---|---|---|---|
 | Loads & tracking | edit | edit | edit | edit | – |
 | Brokers | edit | edit | edit | edit | – |
-| Carriers | edit | edit | edit | view | edit |
+| Your carrier (in Settings) | edit | – | – | – | – |
 | Drivers | edit | edit | edit | – | edit |
 | Invoices & settlements | edit | edit | – | edit | – |
 | Reports & revenue | view | view | – | view | – |
 | Team, Sheet link, demo data | ✓ | – | – | – | – |
 
-Only Owner and Manager can **delete** loads, brokers and carriers. Every load is saved under
+The platform works with **one carrier**. Its details (name, MC, DOT, address, contact, insurance) are
+kept by the owner under **Settings → Your carrier**, saved in the `Carriers` tab, and printed on invoices;
+loads, drivers and settlements are linked to it automatically. Only Owner and Manager can **delete** loads and brokers. Every load is saved under
 the name of whoever adds it; only Owner and Manager can assign a load or a driver to a dispatcher. HR never
 receives rates, revenue, invoices or reports — the script withholds that data,
 it isn't just hidden on screen. The rules live in `apps-script/Code.gs`
@@ -71,7 +73,8 @@ consider swapping in a keyed provider — the calls live in one place (`GEO`, `c
 | **Loads** | Reference, status, broker / dispatcher / carrier / driver names, route, miles, broker rate, RPM, carrier rate, carrier RPM, margin, pickup & delivery place and date (+ coordinates), commodity, equipment, weight, notes |
 | **Tracking** | One row per status update of a load (time, status, location, note) |
 | **Brokers** | Name, MC, DOT, contact, phone, emails, address, payment terms, notes |
-| **Carriers**, **Drivers** | Company / driver details (driver email, license and expiry are optional); drivers also carry their assigned dispatcher |
+| **Carriers** | One row: the carrier the platform works for (name, MC, DOT, address, contact, insurance) |
+| **Drivers** | Driver details (email, license and expiry are optional) and the assigned dispatcher |
 | **Invoices**, **Settlements** | Money owed to you / to carriers, linked to the load |
 
 Accounts and password hashes are **not** in the spreadsheet — the script keeps

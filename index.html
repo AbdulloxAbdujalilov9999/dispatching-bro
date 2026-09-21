@@ -37,7 +37,7 @@ h1,h2,h3 { margin:0; line-height:1.25; }
 #app { display:flex; min-height:100vh; }
 .sidebar { width:236px; flex:none; background:var(--panel); border-right:1px solid var(--line); padding:18px 12px; display:flex; flex-direction:column; gap:4px; position:sticky; top:0; height:100vh; }
 .brand { display:flex; align-items:center; gap:10px; padding:4px 10px 16px; font-weight:700; font-size:16px; }
-.logo { width:32px; height:32px; border-radius:9px; background:var(--brand); color:#fff; display:grid; place-items:center; }
+.logo { width:32px; height:32px; flex:none; } .logo svg { width:100%; height:100%; display:block; }
 .nav a { display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:9px; color:var(--soft); font-weight:500; text-decoration:none; }
 .nav a:hover { background:var(--panel2); color:var(--ink); }
 .nav a.active { background:var(--brand-soft); color:var(--brand); }
@@ -306,13 +306,16 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : "id" + Date.now().to
 const newest = (a, b) => (b.createdAt || "").localeCompare(a.createdAt || "");
 const byId = (t, id) => state[t].find(r => r.id === id);
 const nameOf = (t, id) => byId(t, id)?.name || "—";
+/* This platform works with ONE carrier: its details live in the owner's Settings. Every load, driver and settlement belongs to it. */
+const carrier = () => [...state.carriers].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))[0] || null;
+const carrierLink = () => ({carrierId: carrier()?.id || null, carrierName: carrier()?.name || ""});
 const inputDT = iso => { if (!iso) return ""; const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
 const today = () => new Date().toISOString().slice(0, 10);
 const badge = s => `<span class="badge b-${esc(s)}">${esc(label(s))}</span>`;
 const invStatus = i => (i.status === "SENT" && i.dueDate && i.dueDate < today()) ? "OVERDUE" : i.status;
-const settings = () => ({company:"Your Dispatch Co.", address:"", phone:"", email:"", ...JSON.parse(localStorage.getItem("hw-settings") || "{}")});
 
+const LOGO = '<svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="hwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b2d5e"/><stop offset="1" stop-color="#080f2a"/></linearGradient></defs><rect width="100" height="100" rx="22" fill="url(#hwg)"/><path d="M33 58C46 58 54 42 67 42" fill="none" stroke="#ffb020" stroke-width="9" stroke-linecap="round"/><rect x="27" y="24" width="13" height="52" rx="6.5" fill="#fff"/><rect x="60" y="24" width="13" height="52" rx="6.5" fill="#fff"/></svg>';   // the Haulwise mark: an H whose crossbar is a road
 const ICONS = {
   dashboard:'<rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>',
   loads:'<path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/>',
@@ -369,13 +372,13 @@ async function act(fn, okMsg) {
 const nm = (t, id) => byId(t, id)?.name || "";
 const ref = id => byId("loads", id)?.ref || "";
 const DENORM = {
-  loads: r => ({brokerName: nm("brokers", r.brokerId), carrierName: nm("carriers", r.carrierId), driverName: nm("drivers", r.driverId),
+  loads: r => ({brokerName: nm("brokers", r.brokerId), ...carrierLink(), driverName: nm("drivers", r.driverId),
                 route: `${r.pickupLocation || ""} → ${r.deliveryLocation || ""}`, margin: Math.round((Number(r.brokerRate || 0) - Number(r.carrierRate || 0)) * 100) / 100,
                 rpm: perMile(r.brokerRate, r.miles), carrierRpm: perMile(r.carrierRate, r.miles)}),
-  drivers: r => ({carrierName: nm("carriers", r.carrierId)}),
+  drivers: r => ({...carrierLink()}),
   tracking: r => ({loadRef: ref(r.loadId)}),
   invoices: r => ({loadRef: ref(r.loadId), brokerName: nm("brokers", r.brokerId)}),
-  settlements: r => ({loadRef: ref(r.loadId), carrierName: nm("carriers", r.carrierId)})
+  settlements: r => ({loadRef: ref(r.loadId), ...carrierLink()})
 };
 function createRow(t, data) {
   const now = new Date().toISOString();
@@ -388,7 +391,7 @@ function updateRow(t, id, patch) {
   const p = {...patch, updatedAt: new Date().toISOString()};
   Object.assign(p, DENORM[t] ? DENORM[t]({...cur, ...p}) : {});
   Object.assign(cur, p); queue.push({op: "update", table: t, id, patch: p});
-  const fk = {brokers: "brokerId", carriers: "carrierId", drivers: "driverId"}[t];
+  const fk = {brokers: "brokerId", drivers: "driverId"}[t];
   if (fk && "name" in patch) for (const tb of ["loads", "drivers", "invoices", "settlements"])
     for (const r of state[tb]) if (r[fk] === id && DENORM[tb]) { const d = DENORM[tb](r); if (Object.keys(d).some(k => d[k] !== r[k])) { Object.assign(r, d); queue.push({op: "update", table: tb, id: r.id, patch: d}); } }
   return cur;
@@ -430,7 +433,7 @@ const SECTION = {
   dashboard: {view: EVERYONE, edit: []},
   loads:     {view: LOADS_VIEW, edit: ["owner", "manager", "dispatcher", "accounting"]},
   brokers:   {view: LOADS_VIEW, edit: ["owner", "manager", "dispatcher", "accounting"]},
-  carriers:  {view: EVERYONE, edit: ["owner", "manager", "dispatcher", "hr"]},
+  carriers:  {view: EVERYONE, edit: ["owner"]},
   drivers:   {view: ["owner", "manager", "dispatcher", "hr"], edit: ["owner", "manager", "dispatcher", "hr"]},
   invoices:  {view: MONEY_ROLES, edit: MONEY_ROLES},
   reports:   {view: MONEY_ROLES, edit: []},
@@ -438,7 +441,7 @@ const SECTION = {
   settings:  {view: EVERYONE, edit: EVERYONE}
 };
 const TABLE_SECTION = {loads: "loads", tracking: "loads", brokers: "brokers", carriers: "carriers", drivers: "drivers", invoices: "invoices", settlements: "invoices"};
-const DELETE_ROLES = {loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner", "manager"],
+const DELETE_ROLES = {loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"],
   drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY_ROLES, settlements: MONEY_ROLES};
 const can = (section, level = "view") => !!me && (SECTION[section]?.[level] || []).includes(me.role);
 const canTable = (t, level = "edit") => can(TABLE_SECTION[t], level);
@@ -480,7 +483,7 @@ if ("serviceWorker" in navigator && ["https:", "http:"].includes(location.protoc
 function showAuth(msg = "", pending = false) {
   const signup = authMode === "signup", google = !!CONFIG.googleClientId;
   const isOwner = authDraft.email.trim().toLowerCase() === OWNER_EMAIL;
-  $("#modal-root").innerHTML = `<div class="lock"><div class="card"><div class="logo">${icon("carriers")}</div><h1>Haulwise Dispatch</h1>
+  $("#modal-root").innerHTML = `<div class="lock"><div class="card"><div class="logo">${LOGO}</div><h1>Haulwise Dispatch</h1>
     ${pending ? `<p class="muted">Thanks — your request was sent. The owner will approve it and choose your role. You can sign in here once that's done.</p>
       <button class="btn" style="width:100%" data-action="auth-mode" data-v="signin">Back to sign in</button>` : `
     <div class="seg" style="margin:12px 0"><button class="${!signup ? "on" : ""}" data-action="auth-mode" data-v="signin">Sign in</button><button class="${signup ? "on" : ""}" data-action="auth-mode" data-v="signup">Request access</button></div>
@@ -663,24 +666,16 @@ const ENT = {
           {h:"Contact",c:r=>`${esc(r.phone||"—")}<div class="muted">${esc(r.email||"")}</div>`},
           {h:"Terms",c:r=>esc(r.paymentTerms||"—")},
           {h:"Loads",c:r=>state.loads.filter(l=>l.brokerId===r.id).length}] },
-  carriers: { title:"Carrier", plural:"Carriers", sub:"Trucking companies you dispatch to.",
-    fields:[{k:"name",l:"Carrier name",req:1,full:1},{k:"mcNumber",l:"MC number"},{k:"dotNumber",l:"DOT number"},{k:"contactName",l:"Contact"},{k:"phone",l:"Phone",t:"tel"},
-            {k:"email",l:"Email",t:"email"},{k:"status",l:"Status",t:"select",opts:STATUS_OPTS.carrier,def:"ACTIVE"},{k:"insuranceProvider",l:"Insurance provider"},
-            {k:"insuranceExpiry",l:"Insurance expires",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}],
-    cols:[{h:"Carrier",c:r=>`<span class="strong">${esc(r.name)}</span><div class="muted">${esc([r.mcNumber,r.dotNumber].filter(Boolean).join(" · "))}</div>`},
-          {h:"Contact",c:r=>`${esc(r.phone||"—")}<div class="muted">${esc(r.email||"")}</div>`},
-          {h:"Insurance",c:r=>{ const exp = r.insuranceExpiry; const soon = exp && exp < addDays(30).toISOString().slice(0,10);
-             return `${esc(r.insuranceProvider||"—")}<div class="${soon?"":"muted"}" style="${soon?"color:var(--bad)":""}">${exp?"Exp "+fmtDate(exp):""}</div>`; }},
-          {h:"Status",c:r=>badge(r.status)},
-          {h:"Drivers",c:r=>state.drivers.filter(d=>d.carrierId===r.id).length},
-          {h:"Loads",c:r=>state.loads.filter(l=>l.carrierId===r.id).length}] },
+  carriers: { title:"Carrier", plural:"Carrier", sub:"The carrier you dispatch for.",
+    fields:[{k:"name",l:"Carrier name",req:1,full:1},{k:"mcNumber",l:"MC number"},{k:"dotNumber",l:"DOT number"},{k:"address",l:"Address",full:1},
+            {k:"contactName",l:"Contact person"},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email",t:"email"},
+            {k:"insuranceProvider",l:"Insurance provider"},{k:"insuranceExpiry",l:"Insurance expires",t:"date"},{k:"notes",l:"Notes (EIN, factoring, remit-to…)",t:"textarea",full:1}], cols:[] },
   drivers: { title:"Driver", plural:"Drivers", sub:"Drivers, trucks and trailers.",
-    fields:[{k:"name",l:"Driver name",req:1,full:1},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email (optional)",t:"email"},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",full:1},
+    fields:[{k:"name",l:"Driver name",req:1,full:1},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email (optional)",t:"email",full:1},
             {k:"dispatcherEmail",l:"Assigned dispatcher",t:"dispatcher",none:1,full:1},
             {k:"licenseNumber",l:"License # (optional)"},{k:"licenseExpiry",l:"License expiration date (optional)",t:"date"},{k:"truckNumber",l:"Truck #"},{k:"trailerNumber",l:"Trailer #"},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.driver,def:"ACTIVE"},{k:"notes",l:"Notes",t:"textarea",full:1}],
     cols:[{h:"Driver",c:r=>`<span class="strong">${esc(r.name)}</span><div class="muted">${esc(r.phone||"")}</div>`},
-          {h:"Carrier",c:r=>esc(nameOf("carriers",r.carrierId))},
           {h:"Dispatcher",c:r=>r.dispatcherName ? esc(r.dispatcherName) : `<span class="muted">Unassigned</span>`},
           {h:"Equipment",c:r=>esc([r.truckNumber,r.trailerNumber].filter(Boolean).join(" / ")||"—")},
           {h:"License",c:r=>`${esc(r.licenseNumber||"—")}<div class="muted">${r.licenseExpiry?"Exp "+fmtDate(r.licenseExpiry):""}</div>`},
@@ -689,7 +684,7 @@ const ENT = {
   loads: { title:"Load", plural:"Loads", sub:"",
     fields:[{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
             {k:"dispatcherEmail",l:"Dispatcher",t:"dispatcher",full:1},
-            {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name"},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers"},{k:"driverId",l:"Driver",t:"driver",full:1},
+            {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name",full:1},{k:"driverId",l:"Driver",t:"driver",full:1},
             {k:"pickupLocation",l:"Pickup city",t:"city",geo:"pickup",req:1,ph:"Start typing a city…"},{k:"pickupDate",l:"Pickup date",t:"datetime-local",req:1},
             {k:"deliveryLocation",l:"Delivery city",t:"city",geo:"delivery",req:1,ph:"Start typing a city…"},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
             {k:"pickupLat",t:"hidden"},{k:"pickupLng",t:"hidden"},{k:"deliveryLat",t:"hidden"},{k:"deliveryLng",t:"hidden"},
@@ -700,7 +695,7 @@ const ENT = {
     fields:[{k:"loadId",l:"Load (the broker is taken from the load)",t:"ref",ref:"loads",req:1,full:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.invoice,def:"DRAFT"},{k:"dueDate",l:"Due date",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}] },
   settlements: { title:"Settlement", plural:"Settlements", sub:"",
-    fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",req:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
+    fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.settlement,def:"PENDING"},{k:"notes",l:"Notes",t:"textarea",full:1}] }
 };
 const EQUIPMENT = ["Dry Van","Reefer","Flatbed","Step Deck","Power Only","Box Truck","Other"];
@@ -763,6 +758,7 @@ function readForm(form, table) {
 }
 
 async function saveEntity(table, id, data) {
+  if (table === "carriers") { if (!id && carrier()) throw new Error("The carrier is already set up — edit it instead."); if (!id) data.status = "ACTIVE"; }
   if (table === "loads") {
     data.ref ||= nextNumber("LD", "loads", "ref");
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
@@ -778,6 +774,7 @@ async function saveEntity(table, id, data) {
     data.brokerId = l.brokerId;
   }
   if (!id && table === "invoices") data.invoiceNumber = nextNumber("INV", "invoices", "invoiceNumber");
+  if (table === "carriers") { if (id) updateRow(table, id, data); else createRow(table, data); syncCarrier(); return; }
   if (id) {
     const oldStatus = byId(table, id).status;
     updateRow(table, id, data);
@@ -795,12 +792,17 @@ function setLoadStatus(id, status, note, location) {
   addTrack(id, status, location || l.pickupLocation, note || `Status updated to ${label(status)}.`);
 }
 
+/* after the carrier's details change, refresh the carrier name/link stored on loads, drivers and settlements */
+function syncCarrier() {
+  const link = carrierLink();
+  for (const tb of ["loads", "drivers", "settlements"]) for (const r of state[tb])
+    if (r.carrierId !== link.carrierId || r.carrierName !== link.carrierName) { Object.assign(r, link); queue.push({op: "update", table: tb, id: r.id, patch: {...link}}); }
+}
+
 /* deletes honour the old database rules: loads cascade, carriers/brokers with paperwork are protected */
 function deleteEntity(table, id) {
-  if (table === "carriers" && state.settlements.some(s => s.carrierId === id)) throw new Error("This carrier has settlements and can't be deleted.");
   if (table === "brokers" && state.invoices.some(i => i.brokerId === id)) throw new Error("This broker has invoices and can't be deleted.");
   if (table === "loads") for (const t of ["tracking", "invoices", "settlements"]) for (const r of state[t].filter(r => r.loadId === id)) removeRow(t, r.id);
-  if (table === "carriers") { for (const d of state.drivers.filter(d => d.carrierId === id)) updateRow("drivers", d.id, {carrierId: null}); for (const l of state.loads.filter(l => l.carrierId === id)) updateRow("loads", l.id, {carrierId: null}); }
   if (table === "brokers") for (const l of state.loads.filter(l => l.brokerId === id)) updateRow("loads", l.id, {brokerId: null});
   if (table === "drivers") for (const l of state.loads.filter(l => l.driverId === id)) updateRow("loads", l.id, {driverId: null});
   removeRow(table, id);
@@ -839,11 +841,10 @@ function loadMatches(l) {
   if (ui.status && l.status !== ui.status) return false;
   if (!dispatcherMatch(l.dispatcherEmail, f.dispatcher)) return false;
   if (f.broker && l.brokerId !== f.broker) return false;
-  if (f.carrier && l.carrierId !== f.carrier) return false;
   if (f.driver && l.driverId !== f.driver) return false;
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
-  return !ui.q || [l.ref, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, nameOf("brokers", l.brokerId), nameOf("carriers", l.carrierId), nameOf("drivers", l.driverId)].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+  return !ui.q || [l.ref, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, nameOf("brokers", l.brokerId), nameOf("drivers", l.driverId)].join(" ").toLowerCase().includes(ui.q.toLowerCase());
 }
 function loadsSummary(rows) {
   const live = rows.filter(l => l.status !== "CANCELLED"), sum = (a, k) => a.reduce((s, l) => s + Number(l[k] || 0), 0);
@@ -852,9 +853,8 @@ function loadsSummary(rows) {
   return `<div class="summary">${chip("Loads", live.length)}${chip("Gross (broker rate)", money(gross))}${chip("Carrier cost", money(cost))}${chip("Margin", money(gross - cost))}${chip("Avg RPM", rpm != null ? "$" + rpm.toFixed(2) + "/mi" : "—")}</div>`;
 }
 const ENTITY_FILTERS = {
-  drivers: {ui: () => fSelect("status", "All statuses", STATUS_OPTS.driver.map(s => [s, label(s)])) + fSelect("carrierId", "All carriers", fOptions(state.carriers)) + fSelect("dispatcher", "All dispatchers", [["__none", "Unassigned"], ...dispatcherFilterOptions(state.drivers)]),
-            match: d => (!ui.f.status || d.status === ui.f.status) && (!ui.f.carrierId || d.carrierId === ui.f.carrierId) && dispatcherMatch(d.dispatcherEmail, ui.f.dispatcher)},
-  carriers: {ui: () => fSelect("status", "All statuses", STATUS_OPTS.carrier.map(s => [s, label(s)])), match: c => !ui.f.status || c.status === ui.f.status},
+  drivers: {ui: () => fSelect("status", "All statuses", STATUS_OPTS.driver.map(s => [s, label(s)])) + fSelect("dispatcher", "All dispatchers", [["__none", "Unassigned"], ...dispatcherFilterOptions(state.drivers)]),
+            match: d => (!ui.f.status || d.status === ui.f.status) && dispatcherMatch(d.dispatcherEmail, ui.f.dispatcher)},
   brokers: {ui: () => fSelect("terms", "All payment terms", PAYMENT_TERMS.map(t => [t, t])) + fSelect("mc", "MC number", [["missing", "Needs MC"], ["ok", "Has MC"]]),
             match: b => (!ui.f.terms || b.paymentTerms === ui.f.terms) && (!ui.f.mc || (ui.f.mc === "missing" ? !b.mcNumber : !!b.mcNumber))}
 };
@@ -891,9 +891,8 @@ function pageDashboard() {
   if (can("loads")) cards.push(stat("Active loads", state.loads.filter(l => ["BOOKED", "DISPATCHED", "IN_TRANSIT"].includes(l.status)).length, "loads"));
   if (showMoney) cards.push(stat("Total booked revenue", money(loads.reduce((s, l) => s + Number(l.brokerRate), 0)), "invoices"), stat("Outstanding invoices", money(outstanding), "invoices"));
   if (me?.role === "dispatcher") { const mine = activeLoads().filter(l => l.dispatcherEmail === me.email && l.pickupDate && ymd(l.pickupDate).slice(0, 7) === ymd(new Date()).slice(0, 7)); cards.push(stat("My loads this month", mine.length, "loads"), stat("My gross this month", money(mine.reduce((s, l) => s + Number(l.brokerRate || 0), 0)), "invoices")); }
-  if (can("carriers")) cards.push(stat("Active carriers", state.carriers.filter(c => c.status === "ACTIVE").length, "carriers"));
   if (can("drivers")) cards.push(stat("Active drivers", state.drivers.filter(d => d.status === "ACTIVE").length, "drivers"));
-  const quick = [["loads", "Book a new load"], ["brokers", "Add a broker"], ["carriers", "Add a carrier"], ["drivers", "Add a driver"], ["invoices", "Create an invoice"]]
+  const quick = [["loads", "Book a new load"], ["brokers", "Add a broker"], ["drivers", "Add a driver"], ["invoices", "Create an invoice"]]
     .filter(([t]) => canTable(t, "edit")).map(([t, text]) => `<button class="btn" data-action="new" data-table="${t}">${icon("plus")}${text}</button>`).join("");
   return pageHead("Dashboard", `Welcome${me?.name ? ", " + esc(me.name.split(" ")[0]) : ""}. Overview of your dispatch operation.`, canTable("loads", "edit") ? newBtn("loads", "New load") : "") +
   (cards.length ? `<div class="grid g4">${cards.join("")}</div>` : "") +
@@ -909,7 +908,6 @@ const loadCols = () => [
   {h: "Route", c: l => `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}`},
   {h: "Broker", c: l => esc(nameOf("brokers", l.brokerId))},
   {h: "Dispatcher", c: l => l.dispatcherName ? esc(l.dispatcherName) : `<span class="muted">—</span>`},
-  {h: "Carrier", c: l => esc(nameOf("carriers", l.carrierId))},
   {h: "Pickup", c: l => fmtDate(l.pickupDate)},
   {h: "Status", c: l => badge(l.status)},
   {h: "Miles / RPM", cls: "nowrap", c: l => l.miles ? `${Math.round(l.miles).toLocaleString()} mi<div class="muted">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : ""}</div>` : `<span class="muted">—</span>`},
@@ -924,7 +922,7 @@ function pageLoads() {
   const bar = `<div class="toolbar">${searchBox("Search loads…")}
     <select class="select" data-input="status">${["", ...LOAD_STATUSES].map(s => `<option value="${s}" ${ui.status === s ? "selected" : ""}>${s ? label(s) : "All statuses"}</option>`).join("")}</select>
     ${fSelect("dispatcher", "All dispatchers", [["__none", "No dispatcher"], ...dispatcherFilterOptions(state.loads)])}
-    ${fSelect("broker", "All brokers", fOptions(state.brokers))}${fSelect("carrier", "All carriers", fOptions(state.carriers))}${fSelect("driver", "All drivers", fOptions(state.drivers))}
+    ${fSelect("broker", "All brokers", fOptions(state.brokers))}${fSelect("driver", "All drivers", fOptions(state.drivers))}
     ${fDate("from", "Pickup from")}${fDate("to", "to")}${clearBtn()}
     <div class="seg" style="margin-left:auto"><button class="${ui.loadsView === "board" ? "on" : ""}" data-action="view" data-v="board">Board</button><button class="${ui.loadsView === "list" ? "on" : ""}" data-action="view" data-v="list">List</button></div></div>`;
   if (ui.loadsView === "list")
@@ -933,8 +931,8 @@ function pageLoads() {
   return head + bar + loadsSummary(all) + `<div class="board">${cols.map(s => { const items = all.filter(l => l.status === s);
     return `<div class="col" data-col="${s}"><div class="col-h">${badge(s)}<span>${items.length}</span></div>${items.map(l =>
       `<a class="lcard" href="#/loads/${l.id}" draggable="${edit}" data-load="${l.id}"><div class="ref">${esc(l.ref)}</div><div class="route">${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}</div>
-       <div class="meta"><span>${esc(nameOf("brokers", l.brokerId))}</span><span class="strong">${money(l.brokerRate)}</span></div><div class="meta"><span>${fmtDate(l.pickupDate)}</span><span>${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : esc(nameOf("carriers", l.carrierId))}</span></div>
-       ${l.dispatcherName ? `<div class="meta"><span>${esc(l.dispatcherName)}</span><span>${esc(nameOf("carriers", l.carrierId))}</span></div>` : ""}</a>`).join("")}</div>`; }).join("")}</div>
+       <div class="meta"><span>${esc(nameOf("brokers", l.brokerId))}</span><span class="strong">${money(l.brokerRate)}</span></div><div class="meta"><span>${fmtDate(l.pickupDate)}</span><span>${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : ""}</span></div>
+       ${l.dispatcherName ? `<div class="meta"><span>${esc(l.dispatcherName)}</span></div>` : ""}</a>`).join("")}</div>`; }).join("")}</div>
     ${edit ? `<p class="muted">Tip: drag a card to another column to change its status.</p>` : ""}`;
 }
 
@@ -952,8 +950,7 @@ function pageLoad(id) {
     <div class="card card-pad"><h2>Route & cargo</h2><dl class="kv"><dt>Pickup</dt><dd>${esc(l.pickupLocation)}<div class="muted">${fmtDT(l.pickupDate)}</div></dd>
       <dt>Delivery</dt><dd>${esc(l.deliveryLocation)}<div class="muted">${fmtDT(l.deliveryDate)}</div></dd><dt>Commodity</dt><dd>${esc(l.commodity || "—")}</dd>
       <dt>Equipment</dt><dd>${esc(l.equipment || "—")}</dd><dt>Weight</dt><dd>${l.weightLbs ? Number(l.weightLbs).toLocaleString() + " lbs" : "—"}</dd><dt>Notes</dt><dd>${esc(l.notes || "—")}</dd></dl></div>
-    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(nameOf("brokers", l.brokerId))}</dd><dt>Carrier</dt><dd>${esc(nameOf("carriers", l.carrierId))}</dd>
-      <dt>Driver</dt><dd>${esc(nameOf("drivers", l.driverId))}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
+    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(nameOf("brokers", l.brokerId))}</dd>      <dt>Driver</dt><dd>${esc(nameOf("drivers", l.driverId))}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
       <dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>
       ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
   ${l.pickupLat != null && l.deliveryLat != null ? `<div class="card card-pad" style="margin-top:16px"><h2>Route</h2><div id="route-map" class="map" data-load="${l.id}"></div></div>` : ""}
@@ -984,7 +981,7 @@ function pageInvoices() {
   const tabs = `<div class="seg" style="margin-bottom:14px"><button class="${ui.tab === "invoices" ? "on" : ""}" data-action="tab" data-v="invoices">Invoices</button><button class="${ui.tab === "settlements" ? "on" : ""}" data-action="tab" data-v="settlements">Carrier settlements</button></div>`;
   const loadLink = r => { const l = byId("loads", r.loadId); return l ? `<a href="#/loads/${l.id}">${esc(l.ref)}</a>` : "—"; };
   if (ui.tab === "settlements") {
-    const cols = [{h: "Load", c: loadLink}, {h: "Carrier", c: s => esc(nameOf("carriers", s.carrierId))}, {h: "Amount", cls: "nowrap", c: s => money(s.amount)}, {h: "Status", c: s => badge(s.status)}, {h: "Paid", c: s => fmtDate(s.paidAt)}];
+    const cols = [{h: "Load", c: loadLink}, {h: "Amount", cls: "nowrap", c: s => money(s.amount)}, {h: "Status", c: s => badge(s.status)}, {h: "Paid", c: s => fmtDate(s.paidAt)}];
     return pageHead("Invoices & settlements", "What brokers owe you and what you owe carriers.", newBtn("settlements", "New settlement")) + tabs + invToolbar("settlements") + `<div class="card">${table([...cols], [...state.settlements].sort(newest).filter(invSearch).filter(s => !ui.f.status || s.status === ui.f.status), {emptyTitle: "No settlements yet", actions: s =>
       (s.status === "PENDING" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="APPROVED">Approve</button>` : "") +
       (s.status !== "PAID" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="PAID">Mark paid</button>` : "") + editDel("settlements", s.id)})}</div>`;
@@ -1028,8 +1025,7 @@ function pageReports() {
   <div class="grid g21" style="margin-top:16px"><div class="card card-pad"><h2>Revenue vs. carrier cost</h2><div class="legend"><span><i></i>Revenue</span><span><i class="alt"></i>Cost</span></div>${chartBars(months, [{name: "Revenue", data: rev}, {name: "Cost", data: cost, cls: "alt"}])}</div>
   <div class="card card-pad"><h2>Loads by status</h2>${hbars(statusCounts, v => v)}</div></div>
   ${dispatcherCard(loads)}
-  <div class="grid g2" style="margin-top:16px"><div class="card card-pad"><h2>Top brokers by revenue</h2>${hbars(top(sumBy(loads, l => l.brokerId, l => Number(l.brokerRate)), "brokers"))}</div>
-  <div class="card card-pad"><h2>Top carriers by cost</h2>${hbars(top(sumBy(loads, l => l.carrierId, l => Number(l.carrierRate)), "carriers"))}</div></div>`;
+  <div class="card card-pad" style="margin-top:16px"><h2>Top brokers by revenue</h2>${hbars(top(sumBy(loads, l => l.brokerId, l => Number(l.brokerRate)), "brokers"))}</div>`;
 }
 
 function pageTeam() {
@@ -1042,7 +1038,7 @@ function pageTeam() {
   const how = u => [u.hasPassword ? "Password" : "", u.emailVerified ? "Google" : ""].filter(Boolean).join(" + ") || "—";
   const person = u => `<span class="strong">${esc(u.name)}</span><div class="muted">${esc(u.email)}</div>`;
   const area = (title, section) => [title, ...EVERYONE.map(r => SECTION[section].edit.includes(r) ? "Edit" : SECTION[section].view.includes(r) ? "View" : "—")];
-  const perm = [["Loads & tracking", "loads"], ["Brokers", "brokers"], ["Carriers", "carriers"], ["Drivers", "drivers"], ["Invoices & settlements", "invoices"], ["Reports & revenue", "reports"]].map(([t, sec]) => area(t, sec));
+  const perm = [["Loads & tracking", "loads"], ["Brokers", "brokers"], ["Drivers", "drivers"], ["Invoices & settlements", "invoices"], ["Reports & revenue", "reports"]].map(([t, sec]) => area(t, sec));
   const permCols = ["Area", ...EVERYONE.map(r => ROLE_LABELS[r])].map((h, i) => ({h, c: r => i ? (r[i] === "—" ? `<span class="muted">—</span>` : esc(r[i])) : `<span class="strong">${esc(r[0])}</span>`}));
   return head +
   `<div class="card" style="margin-bottom:16px"><div class="card-pad" style="padding-bottom:0"><h2>Access requests ${pending.length ? `<span class="badge b-PENDING">${pending.length}</span>` : ""}</h2></div>
@@ -1053,22 +1049,21 @@ function pageTeam() {
     {h: "Status", c: u => u.status === "active" ? badge("ACTIVE") : `<span class="badge b-INACTIVE">Turned off</span>`}, {h: "Signs in with", c: u => esc(how(u))}], members,
     {emptyTitle: "Nobody yet", actions: u => u.role === "owner" ? "" : `<button class="btn sm" data-action="team-toggle" data-email="${esc(u.email)}" data-to="${u.status === "active" ? "disabled" : "active"}">${u.status === "active" ? "Turn off" : "Turn on"}</button><button class="btn sm" data-action="team-reset" data-email="${esc(u.email)}">Set password</button><button class="btn sm danger" data-action="team-remove" data-email="${esc(u.email)}">Remove</button>`})}</div>
   <div class="card"><div class="card-pad" style="padding-bottom:0"><h2>What each role can do</h2></div>${table(permCols, perm)}
-    <p class="muted" style="padding:0 20px 16px;margin:0">HR never sees rates, revenue, invoices or reports. Every load is saved under the name of whoever adds it; only Owner and Manager can assign loads and drivers to a dispatcher. Only Owner and Manager can delete loads, brokers and carriers. Only the Owner sees this page and the Google Sheet link.</p></div>`;
+    <p class="muted" style="padding:0 20px 16px;margin:0">HR never sees rates, revenue, invoices or reports. Every load is saved under the name of whoever adds it; only Owner and Manager can assign loads and drivers to a dispatcher. Only Owner and Manager can delete loads and brokers. Only the Owner can edit the carrier details. Only the Owner sees this page and the Google Sheet link.</p></div>`;
 }
 
 function pageSettings() {
-  const s = settings(), dark = document.documentElement.dataset.theme === "dark", owner = can("team");
+  const dark = document.documentElement.dataset.theme === "dark", owner = can("team");
   const account = SHEETS_URL && me ? `<div class="card card-pad"><h2>Your account</h2><dl class="kv"><dt>Name</dt><dd>${esc(me.name)}</dd><dt>Email</dt><dd>${esc(me.email)}</dd><dt>Role</dt><dd>${esc(ROLE_LABELS[me.role] || me.role)}</dd></dl>
     <form data-form="password" style="margin-top:16px"><h2 style="font-size:14px">${me.hasPassword ? "Change password" : "Add a password"}</h2>
       ${me.hasPassword ? `<label class="f">Current password</label><input class="input" name="current" type="password" required autocomplete="current-password">` : `<p class="muted" style="margin-top:0">You sign in with Google. A password lets you also sign in with your email.</p>`}
       <label class="f" style="margin-top:8px">New password (at least 8 characters)</label><input class="input" name="next" type="password" minlength="8" required autocomplete="new-password">
       <div class="actions" style="margin-top:10px"><button class="btn primary" type="submit">Save password</button><button class="btn" type="button" data-action="sign-out">Sign out</button></div></form></div>` : "";
-  const company = can("invoices") ? `<div class="card card-pad"><h2>Company details</h2><p class="muted" style="margin-top:-6px">Shown on printed invoices. Saved in this browser.</p>
-    <form data-form="company"><div class="form-grid">
-      <div class="full"><label class="f">Company name</label><input class="input" name="company" value="${esc(s.company)}"></div>
-      <div class="full"><label class="f">Address</label><input class="input" name="address" value="${esc(s.address)}"></div>
-      <div><label class="f">Phone</label><input class="input" name="phone" value="${esc(s.phone)}"></div><div><label class="f">Email</label><input class="input" name="email" value="${esc(s.email)}"></div>
-      <div class="full"><button class="btn primary" type="submit">Save</button></div></div></form></div>` : "";
+  const co = carrier(), row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : "";
+  const carrierCard = owner ? `<div class="card card-pad"><h2>Your carrier</h2><p class="muted" style="margin-top:-6px">The carrier this platform dispatches for. Saved to the Google Sheet and printed on invoices.</p>
+    ${co ? `<dl class="kv"><dt>Name</dt><dd class="strong">${esc(co.name)}</dd>${row("MC number", co.mcNumber)}${row("DOT number", co.dotNumber)}${row("Address", co.address)}${row("Contact", co.contactName)}${row("Phone", co.phone)}${row("Email", co.email)}${row("Insurance", [co.insuranceProvider, co.insuranceExpiry ? "expires " + fmtDate(co.insuranceExpiry) : ""].filter(Boolean).join(" · "))}${row("Notes", co.notes)}</dl>
+      <div class="actions" style="margin-top:12px"><button class="btn primary" data-action="edit" data-table="carriers" data-id="${esc(co.id)}">Edit carrier</button></div>`
+    : `<p class="muted">No carrier yet. Add its name, MC and DOT numbers, insurance and contact.</p><button class="btn primary" data-action="new" data-table="carriers">Add carrier</button>`}</div>` : "";
   const sheets = owner ? `<div class="card card-pad"><h2>Google Sheets</h2>
     <p class="muted" style="margin-top:-6px">${SHEETS_URL ? "Connected — every change is saved to your spreadsheet. Only you can see this." : "Not connected — data is only saved in this browser."}</p>
     <form data-form="sheets"><label class="f">Web app URL</label><input class="input" name="url" value="${esc(SHEETS_URL)}" placeholder="https://script.google.com/macros/s/…/exec">
@@ -1080,8 +1075,8 @@ function pageSettings() {
     : installEvent ? `<p class="muted" style="margin-top:-6px">Add Haulwise to your device: it opens in its own window and starts faster.</p><button class="btn primary" data-action="install">Install app</button>`
     : isIOS() ? `<p class="muted" style="margin:0">On iPhone or iPad: tap the <b>Share</b> button in Safari, then <b>Add to Home Screen</b>.</p>`
     : `<p class="muted" style="margin:0">Use your browser's menu: <b>Install app</b> (Chrome, Edge) or <b>Add to Home screen</b> (Android). If you don't see it, open this page in Chrome, Edge or Safari.</p>`}</div>`;
-  return pageHead("Settings", "Your account, appearance and company details.") +
-  `<div class="grid g2"><div class="grid" style="align-content:start">${account}${company}</div>
+  return pageHead("Settings", "Your account, carrier and appearance.") +
+  `<div class="grid g2"><div class="grid" style="align-content:start">${account}${carrierCard}</div>
   <div class="grid" style="align-content:start">${installCard}<div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${data}</div></div>`;
 }
 
@@ -1089,7 +1084,7 @@ function pageSettings() {
    7. PRINTABLE DOCUMENTS
    ===================================================================== */
 function docHtml(kind, id) {
-  const s = settings(), co = `<div class="strong">${esc(s.company)}</div><div>${esc(s.address)}</div><div>${esc([s.phone, s.email].filter(Boolean).join(" · "))}</div>`;
+  const k = carrier() || {}, co = `<div class="strong">${esc(k.name || "Your carrier")}</div><div>${esc([k.mcNumber, k.dotNumber].filter(Boolean).join(" · "))}</div><div>${esc(k.address || "")}</div><div>${esc([k.phone, k.email].filter(Boolean).join(" · "))}</div>`;
   const i = byId("invoices", id), l = byId("loads", i.loadId) || {}, c = byId("brokers", i.brokerId) || {};
   return `<div class="doc"><div class="row"><div><h1>Invoice</h1><div class="sub">${esc(i.invoiceNumber)} · ${fmtDate(i.createdAt)}</div></div><div style="text-align:right">${co}</div></div>
     <div class="row"><div><h3>Bill to</h3><div class="strong">${esc(c.name || "—")}</div><div>${esc(c.addressLine || "")}</div><div>${esc([c.city, c.state, c.zip].filter(Boolean).join(", "))}</div></div><div><h3>Due date</h3>${fmtDate(i.dueDate)}<h3 style="margin-top:10px">Status</h3>${esc(label(invStatus(i)))}</div></div>
@@ -1107,17 +1102,17 @@ function openModal(title, body, footer = "", wide = false) {
 }
 const closeModal = () => { if ($("#modal-root .lock")) return; $("#modal-root").innerHTML = ""; };
 
-const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["carriers", "Carriers"], ["drivers", "Drivers"], ["brokers", "Brokers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["team", "Team", "drivers"], ["settings", "Settings"]];
-function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page || "dashboard", arg}; }
+const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["drivers", "Drivers"], ["brokers", "Brokers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["team", "Team", "drivers"], ["settings", "Settings"]];
+function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page === "carriers" ? "settings" : (page || "dashboard"), arg}; }   // the old Carriers page now lives in Settings
 
 function render() {
   const {page, arg} = route();
   const pending = pendingCount();
-  $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${icon("carriers")}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
+  $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${LOGO}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
     `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}</nav>
     <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
     ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
-  const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), carriers: () => pageEntity("carriers"), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"),
+  const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"),
     invoices: pageInvoices, reports: pageReports, team: pageTeam, settings: pageSettings};
   const section = pages[page] ? page : "dashboard";
   if (!me) { $("#view").innerHTML = ""; return; }
@@ -1137,7 +1132,7 @@ const ACTIONS = {
   "close-bg": (d, e) => { if (e.target.classList.contains("modal-back")) closeModal(); },
   new: d => { if (!canTable(d.table, "edit")) return denied(); const preset = {}; if (d.load) { const l = byId("loads", d.load); preset.loadId = l.id;
       if (d.table === "invoices") { preset.brokerId = l.brokerId; preset.amount = l.brokerRate; }
-      if (d.table === "settlements") { preset.carrierId = l.carrierId; preset.amount = l.carrierRate; } } openForm(d.table, null, preset); },
+      if (d.table === "settlements") { preset.amount = l.carrierRate; } } openForm(d.table, null, preset); },
   edit: d => canTable(d.table, "edit") ? openForm(d.table, d.id) : denied(),
   delete: d => { if (!canDelete(d.table)) return denied(); if (!confirm(`Delete this ${ENT[d.table].title.toLowerCase()}? This can't be undone.`)) return;
     act(() => { deleteEntity(d.table, d.id); if (d.back) location.hash = "#/loads"; }, "Deleted"); },
@@ -1190,8 +1185,6 @@ document.addEventListener("submit", e => {
   } else if (f.dataset.form === "password") {
     const fd = new FormData(f); const btn = f.querySelector("button[type=submit]"); btn.disabled = true;
     api("changePassword", {current: fd.get("current") || "", next: fd.get("next")}).then(r => { localStorage.setItem("hw-token", r.token); me = r.user; toast("Password saved"); render(); }).catch(e => { toast(e.message, "error"); btn.disabled = false; });
-  } else if (f.dataset.form === "company") {
-    localStorage.setItem("hw-settings", JSON.stringify(Object.fromEntries(new FormData(f)))); toast("Saved");
   }
 });
 
@@ -1212,7 +1205,7 @@ document.addEventListener("change", e => {
   if (t.dataset.teamRole !== undefined && t.value) { teamAction(() => api("users.update", {email: t.dataset.email, role: t.value}), "Role updated"); return; }
   const form = t.closest("#entity-form"); if (!form || t.name !== "loadId") return;    // picking a load pre-fills its carrier / broker / rate
   const l = byId("loads", t.value); if (!l) return; const {table: tb} = form.dataset, set = (n, v) => { if (form.elements[n] && v != null) form.elements[n].value = v; };
-  if (tb === "settlements") { set("carrierId", l.carrierId || ""); set("amount", l.carrierRate); }
+  if (tb === "settlements") { set("amount", l.carrierRate); }
   if (tb === "invoices") { set("brokerId", l.brokerId || ""); set("amount", l.brokerRate); }
 });
 document.addEventListener("keydown", e => {
@@ -1245,11 +1238,11 @@ document.addEventListener("drop", e => { const c = e.target.closest?.(".col"); i
 /* =====================================================================
    10. CSV + JSON IMPORT / EXPORT, DEMO DATA
    ===================================================================== */
-const CSV_HEAD = ["Reference", "Status", "Broker", "Dispatcher", "Carrier", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
+const CSV_HEAD = ["Reference", "Status", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
 function download(name, text, mime = "text/csv") { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + text], {type: mime + ";charset=utf-8"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 const csvLine = a => a.map(v => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",");
 function exportCSV() {
-  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, nameOf("brokers", l.brokerId).replace("—", ""), l.dispatcherName, nameOf("carriers", l.carrierId).replace("—", ""), nameOf("drivers", l.driverId).replace("—", ""),
+  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, nameOf("brokers", l.brokerId).replace("—", ""), l.dispatcherName, nameOf("drivers", l.driverId).replace("—", ""),
     l.pickupLocation, l.pickupDate, l.deliveryLocation, l.deliveryDate, l.commodity, l.weightLbs, l.equipment, l.brokerRate, l.carrierRate, l.miles, l.rpm, l.notes]);
   download(`loads-${today()}.csv`, [CSV_HEAD, ...rows].map(csvLine).join("\r\n"));
 }
@@ -1266,13 +1259,13 @@ async function importCSV(text) {
   if (ix["pickup location"] == null || ix["delivery location"] == null) throw new Error("This doesn't look like a loads export (needs “Pickup Location” and “Delivery Location” columns).");
   const alias = {"broker": "customer", "broker rate": "customer rate"};
   const get = (r, name) => { const k = name.toLowerCase(); return (r[ix[k] ?? ix[alias[k]]] ?? "").trim(); };
-  const ensure = async (t, name) => { if (!name) return null; const f = state[t].find(x => x.name.toLowerCase() === name.toLowerCase()); return (f || await createRow(t, {name, ...(t === "carriers" ? {status: "ACTIVE"} : {}), ...(t === "drivers" ? {status: "ACTIVE"} : {})})).id; };
+  const ensure = async (t, name) => { if (!name) return null; const f = state[t].find(x => x.name.toLowerCase() === name.toLowerCase()); return (f || await createRow(t, {name, ...(t === "drivers" ? {status: "ACTIVE"} : {})})).id; };
   let made = 0, updated = 0, bad = 0;
   for (const r of rows) {
     const pu = new Date(get(r, "Pickup Date")), de = new Date(get(r, "Delivery Date"));
     if (!get(r, "Pickup Location") || !get(r, "Delivery Location") || isNaN(pu) || isNaN(de)) { bad++; continue; }
     const st = get(r, "Status").toUpperCase(), ref = get(r, "Reference");
-    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", brokerId: await ensure("brokers", get(r, "Broker")), carrierId: await ensure("carriers", get(r, "Carrier")), driverId: await ensure("drivers", get(r, "Driver")),
+    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", brokerId: await ensure("brokers", get(r, "Broker")), driverId: await ensure("drivers", get(r, "Driver")),
       pickupLocation: get(r, "Pickup Location"), pickupDate: pu.toISOString(), deliveryLocation: get(r, "Delivery Location"), deliveryDate: de.toISOString(), commodity: get(r, "Commodity") || null,
       weightLbs: get(r, "Weight (lbs)") ? Number(get(r, "Weight (lbs)")) : null, equipment: get(r, "Equipment") || null, brokerRate: Number(get(r, "Broker Rate")) || 0, carrierRate: Number(get(r, "Carrier Rate")) || 0, notes: get(r, "Notes") || null, miles: Number(get(r, "Miles")) > 0 ? Number(get(r, "Miles")) : null};
     const existing = ref && state.loads.find(l => l.ref === ref);
@@ -1290,21 +1283,20 @@ async function seedDemo() {
   const at = (days, h = 8) => { const d = addDays(days); d.setHours(h, 0, 0, 0); return d.toISOString(); };
   const cA = await createRow("brokers", {name: "Northwind Distribution", mcNumber: "MC-482910", dotNumber: "DOT-1120493", paymentTerms: "Net 30", contactName: "Pat Chen", email: "pat@northwind.example", phone: "555-201-3344", addressLine: "4500 Freight Way", city: "Chicago", state: "IL", zip: "60607"});
   const cB = await createRow("brokers", {name: "Summit Retail Group", mcNumber: "MC-733018", dotNumber: "DOT-2094117", paymentTerms: "Quick pay", contactName: "Morgan Lee", email: "morgan@summitretail.example", phone: "555-882-1290", addressLine: "12 Commerce Blvd", city: "Dallas", state: "TX", zip: "75201"});
-  const kA = await createRow("carriers", {name: "Redline Freight LLC", mcNumber: "MC-558211", dotNumber: "DOT-2201938", contactName: "Sam Walker", email: "sam@redlinefreight.example", phone: "555-410-7788", insuranceProvider: "Progressive Commercial", insuranceExpiry: addDays(200).toISOString().slice(0, 10), status: "ACTIVE"});
-  const kB = await createRow("carriers", {name: "Blue Horizon Logistics", mcNumber: "MC-771002", dotNumber: "DOT-3390211", contactName: "Robin Diaz", email: "robin@bluehorizon.example", phone: "555-663-9021", insuranceProvider: "Sentry Insurance", insuranceExpiry: addDays(20).toISOString().slice(0, 10), status: "ACTIVE"});
-  const dA = await createRow("drivers", {name: "Marcus Reed", phone: "555-333-1122", email: "marcus.reed@example.com", licenseNumber: "IL-DL-88213", licenseExpiry: addDays(400).toISOString().slice(0, 10), truckNumber: "TRK-104", trailerNumber: "TRL-204", status: "ACTIVE", carrierId: kA.id, dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
-  const dB = await createRow("drivers", {name: "Elena Cho", phone: "555-777-4433", email: "elena.cho@example.com", licenseNumber: "TX-DL-55219", licenseExpiry: addDays(120).toISOString().slice(0, 10), truckNumber: "TRK-220", trailerNumber: "TRL-330", status: "ACTIVE", carrierId: kB.id, dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
+  if (!carrier()) await createRow("carriers", {address: "1200 Depot Rd, Joliet, IL 60436", name: "Redline Freight LLC", mcNumber: "MC-558211", dotNumber: "DOT-2201938", contactName: "Sam Walker", email: "sam@redlinefreight.example", phone: "555-410-7788", insuranceProvider: "Progressive Commercial", insuranceExpiry: addDays(200).toISOString().slice(0, 10), status: "ACTIVE"});
+  const dA = await createRow("drivers", {name: "Marcus Reed", phone: "555-333-1122", email: "marcus.reed@example.com", licenseNumber: "IL-DL-88213", licenseExpiry: addDays(400).toISOString().slice(0, 10), truckNumber: "TRK-104", trailerNumber: "TRL-204", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
+  const dB = await createRow("drivers", {name: "Elena Cho", phone: "555-777-4433", email: "elena.cho@example.com", licenseNumber: "TX-DL-55219", licenseExpiry: addDays(120).toISOString().slice(0, 10), truckNumber: "TRK-220", trailerNumber: "TRL-330", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
   const CITY = {"Chicago, IL": [41.8781, -87.6298], "Columbus, OH": [39.9612, -82.9988], "Dallas, TX": [32.7767, -96.797], "Austin, TX": [30.2672, -97.7431], "Milwaukee, WI": [43.0389, -87.9065], "Detroit, MI": [42.3314, -83.0458], "Houston, TX": [29.7604, -95.3698], "Atlanta, GA": [33.749, -84.388]};
   const MILES = {"Chicago, IL|Columbus, OH": 355, "Dallas, TX|Austin, TX": 195, "Milwaukee, WI|Detroit, MI": 380, "Houston, TX|Atlanta, GA": 790};
   const mk = (o, hist) => { const a = CITY[o.pickupLocation], b = CITY[o.deliveryLocation];
     const row = createRow("loads", {ref: nextNumber("LD", "loads", "ref"), dispatcherEmail: me?.email || null, dispatcherName: me?.name || null, pickupLat: a?.[0], pickupLng: a?.[1], deliveryLat: b?.[0], deliveryLng: b?.[1], miles: MILES[o.pickupLocation + "|" + o.deliveryLocation], ...o});
     hist.forEach(([s, loc, note], i) => createRow("tracking", {loadId: row.id, status: s, location: loc || "", note: note || "", at: new Date(Date.now() - (hist.length - i) * 6 * 3600e3).toISOString()})); return row; };
-  const l1 = await mk({status: "IN_TRANSIT", brokerId: cA.id, carrierId: kA.id, driverId: dA.id, pickupLocation: "Chicago, IL", pickupDate: at(-1), deliveryLocation: "Columbus, OH", deliveryDate: at(1, 17), commodity: "Packaged Foods", weightLbs: 42000, equipment: "Dry Van", brokerRate: 2200, carrierRate: 1850}, [["BOOKED", "Chicago, IL", "Load booked and confirmed."], ["DISPATCHED", "Chicago, IL", "Driver dispatched to pickup."], ["IN_TRANSIT", "Indianapolis, IN", "On schedule."]]);
-  const l2 = await mk({status: "DELIVERED", brokerId: cB.id, carrierId: kB.id, driverId: dB.id, pickupLocation: "Dallas, TX", pickupDate: at(-6, 9), deliveryLocation: "Austin, TX", deliveryDate: at(-6, 18), commodity: "Retail Goods", weightLbs: 18000, equipment: "Reefer", brokerRate: 1100, carrierRate: 900}, [["BOOKED", "Dallas, TX"], ["DISPATCHED", "Dallas, TX"], ["IN_TRANSIT", "Waco, TX"], ["DELIVERED", "Austin, TX", "Delivered on time, POD received."]]);
+  const l1 = await mk({status: "IN_TRANSIT", brokerId: cA.id, driverId: dA.id, pickupLocation: "Chicago, IL", pickupDate: at(-1), deliveryLocation: "Columbus, OH", deliveryDate: at(1, 17), commodity: "Packaged Foods", weightLbs: 42000, equipment: "Dry Van", brokerRate: 2200, carrierRate: 1850}, [["BOOKED", "Chicago, IL", "Load booked and confirmed."], ["DISPATCHED", "Chicago, IL", "Driver dispatched to pickup."], ["IN_TRANSIT", "Indianapolis, IN", "On schedule."]]);
+  const l2 = await mk({status: "DELIVERED", brokerId: cB.id, driverId: dB.id, pickupLocation: "Dallas, TX", pickupDate: at(-6, 9), deliveryLocation: "Austin, TX", deliveryDate: at(-6, 18), commodity: "Retail Goods", weightLbs: 18000, equipment: "Reefer", brokerRate: 1100, carrierRate: 900}, [["BOOKED", "Dallas, TX"], ["DISPATCHED", "Dallas, TX"], ["IN_TRANSIT", "Waco, TX"], ["DELIVERED", "Austin, TX", "Delivered on time, POD received."]]);
   await mk({status: "BOOKED", brokerId: cA.id, pickupLocation: "Milwaukee, WI", pickupDate: at(2), deliveryLocation: "Detroit, MI", deliveryDate: at(3, 14), commodity: "Auto Parts", weightLbs: 30000, equipment: "Flatbed", brokerRate: 1750, carrierRate: 0}, [["BOOKED", "Milwaukee, WI", "Awaiting carrier assignment."]]);
-  await mk({status: "DISPATCHED", brokerId: cB.id, carrierId: kA.id, driverId: dA.id, pickupLocation: "Houston, TX", pickupDate: at(1), deliveryLocation: "Atlanta, GA", deliveryDate: at(3), commodity: "Building Materials", weightLbs: 44000, equipment: "Flatbed", brokerRate: 3100, carrierRate: 2600}, [["BOOKED", "Houston, TX"], ["DISPATCHED", "Houston, TX", "Driver assigned."]]);
+  await mk({status: "DISPATCHED", brokerId: cB.id, driverId: dA.id, pickupLocation: "Houston, TX", pickupDate: at(1), deliveryLocation: "Atlanta, GA", deliveryDate: at(3), commodity: "Building Materials", weightLbs: 44000, equipment: "Flatbed", brokerRate: 3100, carrierRate: 2600}, [["BOOKED", "Houston, TX"], ["DISPATCHED", "Houston, TX", "Driver assigned."]]);
   await createRow("invoices", {invoiceNumber: nextNumber("INV", "invoices", "invoiceNumber"), loadId: l2.id, brokerId: cB.id, amount: 1100, status: "SENT", dueDate: addDays(25).toISOString().slice(0, 10)});
-  await createRow("settlements", {loadId: l2.id, carrierId: kB.id, amount: 900, status: "APPROVED"});
+  await createRow("settlements", {loadId: l2.id, amount: 900, status: "APPROVED"});
   setLoadStatus(l2.id, "INVOICED", "Invoice created.");
 }
 

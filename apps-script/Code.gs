@@ -44,7 +44,7 @@ const ACCESS = {
   loads:       { view: LOADS_VIEW, edit: LOADS_EDIT },
   tracking:    { view: LOADS_VIEW, edit: LOADS_EDIT },
   brokers:     { view: LOADS_VIEW, edit: LOADS_EDIT },
-  carriers:    { view: ALL_ROLES,  edit: ["owner", "manager", "dispatcher", "hr"] },
+  carriers:    { view: ALL_ROLES,  edit: ["owner"] },            // the single carrier this platform works for; only the owner edits it
   drivers:     { view: ["owner", "manager", "dispatcher", "hr"], edit: ["owner", "manager", "dispatcher", "hr"] },
   invoices:    { view: MONEY, edit: MONEY },
   settlements: { view: MONEY, edit: MONEY }
@@ -52,7 +52,7 @@ const ACCESS = {
 // Deleting is narrower than editing: removing a load/broker/carrier also removes linked money records,
 // which some roles can't even see, so only the owner and managers may do it.
 const DELETE = {
-  loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner", "manager"],
+  loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"],
   drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY, settlements: MONEY
 };
 // Loads and drivers belong to a dispatcher. Whoever creates a load is recorded as its dispatcher; only the
@@ -64,7 +64,7 @@ const ASSIGN_KEYS = ["dispatcherEmail", "dispatcherName"];
 // any extra field the website sends is added as a new column automatically.
 const TABS = {
   brokers:     { sheet: "Brokers",     cols: ["name", "mcNumber", "dotNumber", "contactName", "phone", "email", "billingEmail", "addressLine", "city", "state", "zip", "paymentTerms", "notes", "id", "createdAt", "updatedAt"] },
-  carriers:    { sheet: "Carriers",    cols: ["name", "mcNumber", "dotNumber", "contactName", "phone", "email", "status", "insuranceProvider", "insuranceExpiry", "notes", "id", "createdAt", "updatedAt"] },
+  carriers:    { sheet: "Carriers",    cols: ["name", "mcNumber", "dotNumber", "address", "contactName", "phone", "email", "status", "insuranceProvider", "insuranceExpiry", "notes", "id", "createdAt", "updatedAt"] },
   drivers:     { sheet: "Drivers",     cols: ["name", "phone", "email", "carrierName", "dispatcherName", "licenseNumber", "licenseExpiry", "truckNumber", "trailerNumber", "status", "notes", "id", "carrierId", "dispatcherEmail", "createdAt", "updatedAt"] },
   loads:       { sheet: "Loads",       cols: ["ref", "status", "brokerName", "dispatcherName", "carrierName", "driverName", "route", "miles", "brokerRate", "rpm", "carrierRate", "carrierRpm", "margin", "pickupLocation", "pickupDate", "deliveryLocation", "deliveryDate", "commodity", "equipment", "weightLbs", "notes", "id", "brokerId", "carrierId", "driverId", "dispatcherEmail", "pickupLat", "pickupLng", "deliveryLat", "deliveryLng", "createdAt", "updatedAt"] },
   tracking:    { sheet: "Tracking",    cols: ["loadRef", "at", "status", "location", "note", "id", "loadId", "createdAt", "updatedAt"] },

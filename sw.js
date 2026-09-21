@@ -1,7 +1,7 @@
 /* Haulwise Dispatch — service worker.
    Makes the app installable and lets it open with no connection (last data is kept by the page itself).
    It never touches requests to Google Sheets (those are POSTs) or map/geocoding services. */
-const VERSION = "v1";                       // bump when the list of cached files changes
+const VERSION = "v2";                       // bump when the list of cached files changes
 const SHELL = "haulwise-shell-" + VERSION;
 const RUNTIME = "haulwise-runtime-" + VERSION;
 const PRECACHE = [
