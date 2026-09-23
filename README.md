@@ -10,6 +10,18 @@ brokers, drivers, invoices & settlements, reports, team, settings
 (light/dark). Filters on the pages that need them, a **Refresh** button, and it installs as an app. Invoices open as printable documents (Print → Save as PDF). Loads
 export/import as CSV.
 
+## Haulwise Loads (companion app)
+
+[Haulwise Loads](https://github.com/AbdulloxAbdujalilov9999/laneboard) is a
+separate, read-only "loads & lanes" viewer with a bigger map and an expandable
+load list. It signs in with the same accounts as this app and reads loads
+through the same Apps Script backend (`loadAll`) — nothing to sync manually,
+and it respects the same role permissions (an HR account, for instance, sees
+none of it, same as here). It never writes anything back: loads are only
+created and edited here. Ticking **Mark as lane** on a load's form is what
+makes it show up in Haulwise Loads' Lanes view — most loads aren't lanes, so
+the box starts unchecked.
+
 ## Accounts and roles
 
 * **Owner** — `abdujalilov7707@gmail.com`. Can't be removed, disabled or demoted.
@@ -70,7 +82,7 @@ consider swapping in a keyed provider — the calls live in one place (`GEO`, `c
 
 | Tab | What's in it |
 |---|---|
-| **Loads** | Reference, status, broker / dispatcher / carrier / driver names, route, miles, broker rate, RPM, carrier rate, carrier RPM, margin, pickup & delivery place and date (+ coordinates), commodity, equipment, weight, notes |
+| **Loads** | Reference, status, broker / dispatcher / carrier / driver names, route, miles, broker rate, RPM, carrier rate, carrier RPM, margin, pickup & delivery place and date (+ coordinates), commodity, equipment, weight, whether it's marked as a **lane**, notes |
 | **Tracking** | One row per status update of a load (time, status, location, note) |
 | **Brokers** | Name, MC, DOT, contact, phone, emails, address, payment terms, notes |
 | **Carriers** | One row: the carrier the platform works for (name, MC, DOT, address, contact, insurance) |
