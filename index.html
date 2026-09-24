@@ -330,8 +330,10 @@ const ICONS = {
   invoices:'<circle cx="12" cy="12" r="9"/><path d="M12 7v10M15 9.5C14.5 8.5 13.3 8 12 8c-1.7 0-3 .9-3 2.2S10.3 12.2 12 12.5s3 1 3 2.3S13.7 17 12 17c-1.3 0-2.5-.5-3-1.5"/>',
   reports:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
-  plus:'<path d="M12 5v14M5 12h14"/>'
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  laneboard:'<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/>'
 };
+const LANEBOARD_URL = "https://laneboard-bro.vercel.app/"; // the Haulwise Loads companion app (read-only loads & lanes viewer)
 const icon = n => `<svg class="i" viewBox="0 0 24 24">${ICONS[n] || ""}</svg>`;
 
 function toast(msg, kind = "") {
@@ -1102,7 +1104,7 @@ function render() {
   if (sidebarSig !== lastSidebarSig) {
     lastSidebarSig = sidebarSig;
     $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${LOGO}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
-      `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}</nav>
+      `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}${can("loads") ? `<a href="${esc(LANEBOARD_URL)}" target="_blank" rel="noopener">${icon("laneboard")}Open Laneboard</a>` : ""}</nav>
       <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
       ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
   }
