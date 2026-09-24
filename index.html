@@ -173,7 +173,6 @@ body.local .refresh-btn { display:none; }
 .sug:hover,.sug:focus { background:var(--panel2); outline:none; }
 .sug-note { padding:10px 12px; color:var(--soft); font-size:13px; }
 .geo-info { padding:10px 12px; border-radius:9px; background:var(--panel2); font-size:13px; }
-.map { height:340px; border-radius:10px; overflow:hidden; border:1px solid var(--line); }
 .summary { display:flex; flex-wrap:wrap; gap:10px 28px; padding:12px 18px; margin-bottom:14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); }
 .summary b { font-size:17px; display:block; } .summary span { color:var(--soft); font-size:12px; }
 .fdate { display:inline-flex; align-items:center; gap:6px; color:var(--soft); font-size:12px; } .fdate .input { width:auto; }
@@ -627,32 +626,6 @@ async function ensureGeo(form) {
   }
   if (ptOf(form, "pickup") && ptOf(form, "delivery") && (form.elements.miles.value === "")) await updateMiles(form, true);
 }
-let routeMap = null;
-function loadLeaflet() {
-  if (window.L) return Promise.resolve();
-  return new Promise((ok, fail) => {
-    if (!document.getElementById("leaflet-css")) { const c = document.createElement("link"); c.id = "leaflet-css"; c.rel = "stylesheet"; c.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"; document.head.appendChild(c); }
-    const el = document.createElement("script"); el.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"; el.onload = ok; el.onerror = () => fail(new Error("map library")); document.head.appendChild(el);
-  });
-}
-async function initRouteMap() {
-  if (routeMap) { routeMap.remove(); routeMap = null; }
-  const el = $("#route-map"); if (!el) return;
-  const l = byId("loads", el.dataset.load); if (!l) return;
-  try { await loadLeaflet(); } catch { el.innerHTML = `<div class="empty">The map couldn't be loaded.</div>`; return; }
-  if (!el.isConnected) return;
-  const L = window.L, a = [l.pickupLat, l.pickupLng], b = [l.deliveryLat, l.deliveryLng];
-  routeMap = L.map(el, {scrollWheelZoom: false});
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 18, attribution: "© OpenStreetMap contributors"}).addTo(routeMap);
-  L.marker(a).addTo(routeMap).bindPopup("Pickup: " + l.pickupLocation); L.marker(b).addTo(routeMap).bindPopup("Delivery: " + l.deliveryLocation);
-  const line = L.polyline([a, b], {color: "#3b6cf6", weight: 3, dashArray: "6 6"}).addTo(routeMap);
-  routeMap.fitBounds(line.getBounds(), {padding: [30, 30]});
-  try {                                                                 // replace the straight line with the real road route
-    const j = await fetchJson(`${GEO.route}${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`);
-    if (routeMap && el.isConnected) { routeMap.removeLayer(line); const road = L.polyline(j.routes[0].geometry.coordinates.map(([x, y]) => [y, x]), {color: "#3b6cf6", weight: 4}).addTo(routeMap); routeMap.fitBounds(road.getBounds(), {padding: [30, 30]}); }
-  } catch {}
-}
-
 /* =====================================================================
    4. ENTITY DEFINITIONS (forms + table columns)
    ===================================================================== */
@@ -929,8 +902,7 @@ const loadCols = () => [
 function pageLoads() {
   const edit = canTable("loads", "edit");
   const all = [...state.loads].sort(newest).filter(loadMatches);
-  const head = pageHead("Loads", "Dispatch board and load history.",
-    `<button class="btn" data-action="csv-export">Export CSV</button>${edit ? `<button class="btn" data-action="csv-import">Import CSV</button>${newBtn("loads", "New load")}` : ""}`);
+  const head = pageHead("Loads", "Dispatch board and load history.", edit ? newBtn("loads", "New load") : "");
   const bar = `<div class="toolbar">${searchBox("Search loads…")}
     <select class="select" data-input="status">${["", ...LOAD_STATUSES].map(s => `<option value="${s}" ${ui.status === s ? "selected" : ""}>${s ? label(s) : "All statuses"}</option>`).join("")}</select>
     ${fSelect("dispatcher", "All dispatchers", [["__none", "No dispatcher"], ...dispatcherFilterOptions(state.loads)])}
@@ -965,7 +937,6 @@ function pageLoad(id) {
     <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>      <dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
       <dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>
       ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi${l.estimatedMiles ? ' <span class="muted">(estimated)</span>' : ""}</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
-  ${l.pickupLat != null && l.deliveryLat != null ? `<div class="card card-pad" style="margin-top:16px"><h2>Route</h2><div id="route-map" class="map" data-load="${l.id}"></div></div>` : ""}
   <div class="grid ${showInv ? "g2" : ""}" style="margin-top:16px">
     <div class="card card-pad"><h2>Tracking</h2>
       ${edit ? `<form data-form="tracking" data-id="${l.id}" class="grid" style="gap:8px;margin-bottom:16px">
@@ -1084,6 +1055,8 @@ function pageSettings() {
     <div class="actions" style="margin-top:10px"><button class="btn primary" type="submit">Save &amp; reload</button>${ownerSheetUrl ? `<a class="btn" href="${esc(ownerSheetUrl)}" target="_blank" rel="noopener">Open the spreadsheet</a>` : ""}${SHEETS_URL ? '<button class="btn" type="button" data-action="refresh">Refresh now</button>' : ""}</div></form></div>` : "";
   const data = owner ? `<div class="card card-pad"><h2>Data</h2><p class="muted" style="margin-top:-6px">Backups and demo data (owner only).</p>
     <div class="actions"><button class="btn" data-action="seed">Load demo data</button><button class="btn" data-action="json-export">Backup (JSON)</button><button class="btn" data-action="json-import">Restore backup</button><button class="btn danger" data-action="wipe">Delete all data</button></div></div>` : "";
+  const csvCard = canDelete("loads") ? `<div class="card card-pad"><h2>Loads CSV</h2><p class="muted" style="margin-top:-6px">Export loads to a spreadsheet, or bulk-import/update them from one (owner and manager only).</p>
+    <div class="actions"><button class="btn" data-action="csv-export">Export CSV</button><button class="btn" data-action="csv-import">Import CSV</button></div></div>` : "";
   const installCard = `<div class="card card-pad"><h2>Install the app</h2>${
     isStandalone() ? `<p class="muted" style="margin:0">✓ You're using the installed app.</p>`
     : installEvent ? `<p class="muted" style="margin-top:-6px">Add Haulwise to your device: it opens in its own window and starts faster.</p><button class="btn primary" data-action="install">Install app</button>`
@@ -1091,7 +1064,7 @@ function pageSettings() {
     : `<p class="muted" style="margin:0">Use your browser's menu: <b>Install app</b> (Chrome, Edge) or <b>Add to Home screen</b> (Android). If you don't see it, open this page in Chrome, Edge or Safari.</p>`}</div>`;
   return pageHead("Settings", "Your account, carrier and appearance.") +
   `<div class="grid g2"><div class="grid" style="align-content:start">${account}${carrierCard}</div>
-  <div class="grid" style="align-content:start">${installCard}<div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${data}</div></div>`;
+  <div class="grid" style="align-content:start">${installCard}<div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${csvCard}${data}</div></div>`;
 }
 
 /* =====================================================================
@@ -1140,7 +1113,6 @@ function render() {
   if (!can(section)) { $("#view").innerHTML = pageHead("No access", "") + empty("Your role can't open this page", "Ask the owner if you need it.") + `<a href="#/dashboard">← Dashboard</a>`; return; }
   if (section === "team" && !team.users && !team.loading && !team.error) loadTeam();
   $("#view").innerHTML = pages[section]();
-  if (section === "loads" && arg) initRouteMap(); else if (routeMap) { routeMap.remove(); routeMap = null; }
 }
 window.addEventListener("hashchange", () => { ui.q = ""; ui.status = ""; ui.f = ui.keepFilters ? ui.f : defaultFilters(); ui.keepFilters = false; document.body.classList.remove("nav-open"); closeModal(); render(); window.scrollTo(0, 0); });
 
