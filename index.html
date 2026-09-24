@@ -298,6 +298,9 @@ const state = Object.fromEntries(TABLES.map(t => [t, []]));
 const ui = { q:"", status:"", tab:"invoices", loadsView: localStorage.getItem("hw-loads-view") || "board", f: {}, keepFilters: false };
 const LOAD_STATUSES = ["BOOKED","DISPATCHED","IN_TRANSIT","DELIVERED","INVOICED","CANCELLED"];
 const $ = (s, r = document) => r.querySelector(s);
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const countBy = (rows, key) => { const m = new Map(); for (const r of rows) if (r[key]) m.set(r[key], (m.get(r[key]) || 0) + 1); return m; };
+let loadCountByFk = new Map(); // brokerId/driverId -> load count for the Brokers/Drivers "Loads" column; refreshed once per page render in pageEntity(), not once per row
 const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const money = n => new Intl.NumberFormat("en-US", {style:"currency", currency:"USD"}).format(Number(n) || 0);
 const toDate = d => !d ? null : new Date(String(d).length === 10 ? d + "T00:00:00" : d);
@@ -597,7 +600,9 @@ async function updateMiles(form, force) {
   const seq = form.dataset.seq = String((+form.dataset.seq || 0) + 1), box = $("#geo-summary", form); if (box) box.innerHTML = `<span class="muted">Calculating driving miles…</span>`;
   const r = await drivingMiles(a, b);
   if (form.dataset.seq !== seq) return;                       // a newer lookup replaced this one (the form may already be closed: still fill it in)
-  form.elements.miles.value = r.miles; form.dataset.est = r.estimated ? "1" : ""; form.dataset.manual = ""; renderRpm(form);
+  form.elements.miles.value = r.miles; form.dataset.est = r.estimated ? "1" : ""; form.dataset.manual = "";
+  if (form.elements.estimatedMiles) form.elements.estimatedMiles.value = r.estimated ? "1" : "";
+  renderRpm(form);
 }
 async function showSuggestions(input) {
   const which = input.dataset.city, box = $("#sug-" + which), text = input.value;
@@ -667,7 +672,7 @@ const ENT = {
           {h:"MC / DOT",c:r=>r.mcNumber ? `${esc(r.mcNumber)}<div class="muted">${esc(r.dotNumber||"")}</div>` : `<span class="badge b-PENDING">Needs MC</span>`},
           {h:"Contact",c:r=>`${esc(r.phone||"—")}<div class="muted">${esc(r.email||"")}</div>`},
           {h:"Terms",c:r=>esc(r.paymentTerms||"—")},
-          {h:"Loads",c:r=>state.loads.filter(l=>l.brokerId===r.id).length}] },
+          {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
   carriers: { title:"Carrier", plural:"Carrier", sub:"The carrier you dispatch for.",
     fields:[{k:"name",l:"Carrier name",req:1,full:1},{k:"mcNumber",l:"MC number"},{k:"dotNumber",l:"DOT number"},{k:"address",l:"Address",full:1},
             {k:"contactName",l:"Contact person"},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email",t:"email"},
@@ -682,14 +687,14 @@ const ENT = {
           {h:"Equipment",c:r=>esc([r.truckNumber,r.trailerNumber].filter(Boolean).join(" / ")||"—")},
           {h:"License",c:r=>`${esc(r.licenseNumber||"—")}<div class="muted">${r.licenseExpiry?"Exp "+fmtDate(r.licenseExpiry):""}</div>`},
           {h:"Status",c:r=>badge(r.status)},
-          {h:"Loads",c:r=>state.loads.filter(l=>l.driverId===r.id).length}] },
+          {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
   loads: { title:"Load", plural:"Loads", sub:"",
     fields:[{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
             {k:"dispatcherEmail",l:"Dispatcher",t:"dispatcher",full:1},
             {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name",full:1},{k:"driverId",l:"Driver",t:"driver",full:1},
             {k:"pickupLocation",l:"Pickup city",t:"city",geo:"pickup",req:1,ph:"Start typing a city…"},{k:"pickupDate",l:"Pickup date",t:"datetime-local",req:1},
             {k:"deliveryLocation",l:"Delivery city",t:"city",geo:"delivery",req:1,ph:"Start typing a city…"},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
-            {k:"pickupLat",t:"hidden"},{k:"pickupLng",t:"hidden"},{k:"deliveryLat",t:"hidden"},{k:"deliveryLng",t:"hidden"},
+            {k:"pickupLat",t:"hidden"},{k:"pickupLng",t:"hidden"},{k:"deliveryLat",t:"hidden"},{k:"deliveryLng",t:"hidden"},{k:"estimatedMiles",t:"hidden"},
             {k:"commodity",l:"Commodity"},{k:"equipment",l:"Equipment",t:"equip"},{k:"weightLbs",l:"Weight (lbs)",t:"number"},
             {k:"brokerRate",l:"Broker rate ($)",t:"number",step:"0.01",def:0},{k:"carrierRate",l:"Carrier rate ($)",t:"number",step:"0.01",def:0},
             {k:"miles",l:"Miles (filled in from the cities)",t:"number",step:"0.1"},{k:"geoinfo",t:"geoinfo",full:1},
@@ -768,6 +773,7 @@ async function saveEntity(table, id, data) {
   if (table === "loads") {
     data.ref ||= nextNumber("LD", "loads", "ref");
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
+    if (data.pickupDate && data.deliveryDate && new Date(data.deliveryDate) <= new Date(data.pickupDate)) throw new Error("Delivery date must be after the pickup date.");
     data.brokerRate ??= 0; data.carrierRate ??= 0;
     if ("brokerInput" in data) { data.brokerId = ensureBroker(data.brokerInput); delete data.brokerInput; }
     if (!id) data.dispatcherEmail ||= me?.email || null;                     // a load is saved under the name of whoever adds it
@@ -827,7 +833,7 @@ function table(cols, rows, {actions, emptyTitle = "Nothing here yet", emptySub =
     `<tr>${cols.map(c => `<td data-label="${esc(c.h)}" class="${c.cls || ""}">${c.c(r)}</td>`).join("")}${actions ? `<td class="act">${actions(r)}</td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 const editDel = (t, id) => (canTable(t, "edit") ? `<button class="btn sm" data-action="edit" data-table="${t}" data-id="${id}">Edit</button>` : "") + (canDelete(t) ? `<button class="btn sm danger" data-action="delete" data-table="${t}" data-id="${id}">Delete</button>` : "");
-const matchQ = r => !ui.q || JSON.stringify(Object.values(r).filter(v => typeof v !== "object")).toLowerCase().includes(ui.q.toLowerCase());
+const matchQ = r => !ui.q || Object.values(r).filter(v => typeof v !== "object").join(" \u0000 ").toLowerCase().includes(ui.q.toLowerCase());
 const searchBox = ph => `<input class="input" id="search" data-input="search" placeholder="${esc(ph)}" value="${esc(ui.q)}" autocomplete="off">`;
 
 /* ---- filters ---- */
@@ -850,7 +856,7 @@ function loadMatches(l) {
   if (f.driver && l.driverId !== f.driver) return false;
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
-  return !ui.q || [l.ref, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, nameOf("brokers", l.brokerId), nameOf("drivers", l.driverId)].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+  return !ui.q || [l.ref, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, l.brokerName, l.driverName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
 }
 function loadsSummary(rows) {
   const live = rows.filter(l => l.status !== "CANCELLED"), sum = (a, k) => a.reduce((s, l) => s + Number(l[k] || 0), 0);
@@ -910,9 +916,9 @@ function pageDashboard() {
 }
 
 const loadCols = () => [
-  {h: "Reference", c: l => `<a class="strong" href="#/loads/${l.id}">${esc(l.ref)}</a>`},
+  {h: "Reference", c: l => `<a class="strong" href="#/loads/${l.id}">${esc(l.ref)}</a>${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}`},
   {h: "Route", c: l => `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}`},
-  {h: "Broker", c: l => esc(nameOf("brokers", l.brokerId))},
+  {h: "Broker", c: l => esc(l.brokerName || "—")},
   {h: "Dispatcher", c: l => l.dispatcherName ? esc(l.dispatcherName) : `<span class="muted">—</span>`},
   {h: "Pickup", c: l => fmtDate(l.pickupDate)},
   {h: "Status", c: l => badge(l.status)},
@@ -936,8 +942,8 @@ function pageLoads() {
   const cols = LOAD_STATUSES.filter(s => ui.status ? s === ui.status : true);
   return head + bar + loadsSummary(all) + `<div class="board">${cols.map(s => { const items = all.filter(l => l.status === s);
     return `<div class="col" data-col="${s}"><div class="col-h">${badge(s)}<span>${items.length}</span></div>${items.map(l =>
-      `<a class="lcard" href="#/loads/${l.id}" draggable="${edit}" data-load="${l.id}"><div class="ref">${esc(l.ref)}</div><div class="route">${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}</div>
-       <div class="meta"><span>${esc(nameOf("brokers", l.brokerId))}</span><span class="strong">${money(l.brokerRate)}</span></div><div class="meta"><span>${fmtDate(l.pickupDate)}</span><span>${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : ""}</span></div>
+      `<a class="lcard" href="#/loads/${l.id}" draggable="${edit}" data-load="${l.id}"><div class="ref">${esc(l.ref)}${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}</div><div class="route">${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}</div>
+       <div class="meta"><span>${esc(l.brokerName || "—")}</span><span class="strong">${money(l.brokerRate)}</span></div><div class="meta"><span>${fmtDate(l.pickupDate)}</span><span>${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : ""}</span></div>
        ${l.dispatcherName ? `<div class="meta"><span>${esc(l.dispatcherName)}</span></div>` : ""}</a>`).join("")}</div>`; }).join("")}</div>
     ${edit ? `<p class="muted">Tip: drag a card to another column to change its status.</p>` : ""}`;
 }
@@ -950,15 +956,15 @@ function pageLoad(id) {
   const margin = Number(l.brokerRate) - Number(l.carrierRate);
   const docRow = (a, b, c) => `<div class="doc-row"><div>${a}</div><div class="actions">${b}${c || ""}</div></div>`;
   return `<p><a href="#/loads">← Loads</a></p>` +
-  pageHead(l.ref, `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)} &nbsp; ${badge(l.status)}`,
+  pageHead(l.ref, `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)} &nbsp; ${badge(l.status)}${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}`,
     `${edit ? `<button class="btn" data-action="edit" data-table="loads" data-id="${l.id}">Edit</button>` : ""}${canDelete("loads") ? `<button class="btn danger" data-action="delete" data-table="loads" data-id="${l.id}" data-back="1">Delete</button>` : ""}`) +
   `<div class="grid g2">
     <div class="card card-pad"><h2>Route & cargo</h2><dl class="kv"><dt>Pickup</dt><dd>${esc(l.pickupLocation)}<div class="muted">${fmtDT(l.pickupDate)}</div></dd>
       <dt>Delivery</dt><dd>${esc(l.deliveryLocation)}<div class="muted">${fmtDT(l.deliveryDate)}</div></dd><dt>Commodity</dt><dd>${esc(l.commodity || "—")}</dd>
       <dt>Equipment</dt><dd>${esc(l.equipment || "—")}</dd><dt>Weight</dt><dd>${l.weightLbs ? Number(l.weightLbs).toLocaleString() + " lbs" : "—"}</dd><dt>Notes</dt><dd>${esc(l.notes || "—")}</dd></dl></div>
-    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(nameOf("brokers", l.brokerId))}</dd>      <dt>Driver</dt><dd>${esc(nameOf("drivers", l.driverId))}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
+    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>      <dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
       <dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>
-      ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
+      ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi${l.estimatedMiles ? ' <span class="muted">(estimated)</span>' : ""}</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
   ${l.pickupLat != null && l.deliveryLat != null ? `<div class="card card-pad" style="margin-top:16px"><h2>Route</h2><div id="route-map" class="map" data-load="${l.id}"></div></div>` : ""}
   <div class="grid ${showInv ? "g2" : ""}" style="margin-top:16px">
     <div class="card card-pad"><h2>Tracking</h2>
@@ -975,6 +981,8 @@ function pageLoad(id) {
 
 function pageEntity(key) {
   const E = ENT[key], F = ENTITY_FILTERS[key], edit = canTable(key, "edit");
+  if (key === "brokers") loadCountByFk = countBy(state.loads, "brokerId");
+  else if (key === "drivers") loadCountByFk = countBy(state.loads, "driverId");
   const rows = [...state[key]].sort(newest).filter(matchQ).filter(r => !F || F.match(r));
   return pageHead(E.plural, E.sub, edit ? newBtn(key, "New " + E.title.toLowerCase()) : "") + `<div class="toolbar">${searchBox("Search " + E.plural.toLowerCase() + "…")}${F ? F.ui() : ""}${clearBtn()}</div>
     <div class="card">${table(E.cols, rows, {emptyTitle: "No " + E.plural.toLowerCase() + " found", emptySub: hasFilters() ? "Try clearing a filter." : edit ? "Click “New” to add one." : "", actions: (edit || canDelete(key)) ? r => editDel(key, r.id) : undefined})}</div>`;
@@ -992,7 +1000,7 @@ function pageInvoices() {
       (s.status === "PENDING" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="APPROVED">Approve</button>` : "") +
       (s.status !== "PAID" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="PAID">Mark paid</button>` : "") + editDel("settlements", s.id)})}</div>`;
   }
-  const cols = [{h: "Invoice #", c: i => `<span class="strong">${esc(i.invoiceNumber)}</span>`}, {h: "Load", c: loadLink}, {h: "Broker", c: i => esc(nameOf("brokers", i.brokerId))},
+  const cols = [{h: "Invoice #", c: i => `<span class="strong">${esc(i.invoiceNumber)}</span>`}, {h: "Load", c: loadLink}, {h: "Broker", c: i => esc(i.brokerName || "—")},
     {h: "Amount", cls: "nowrap", c: i => money(i.amount)}, {h: "Due", c: i => fmtDate(i.dueDate)}, {h: "Status", c: i => badge(invStatus(i))}];
   return pageHead("Invoices & settlements", "What brokers owe you and what you owe carriers.", newBtn("invoices", "New invoice")) + tabs + invToolbar("invoices") + `<div class="card">${table(cols, [...state.invoices].sort(newest).filter(invSearch).filter(i => !ui.f.status || invStatus(i) === ui.f.status), {emptyTitle: "No invoices yet", emptySub: "Invoice a delivered load.", actions: i =>
     `<button class="btn sm" data-action="view-doc" data-kind="invoice" data-id="${i.id}">View / Print</button>` +
@@ -1111,13 +1119,20 @@ const closeModal = () => { if ($("#modal-root .lock")) return; $("#modal-root").
 const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["drivers", "Drivers"], ["brokers", "Brokers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["team", "Team", "drivers"], ["settings", "Settings"]];
 function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page === "carriers" ? "settings" : (page || "dashboard"), arg}; }   // the old Carriers page now lives in Settings
 
+let lastSidebarSig = null;
 function render() {
   const {page, arg} = route();
   const pending = pendingCount();
-  $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${LOGO}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
-    `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}</nav>
-    <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
-    ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
+  // Rebuilding the sidebar is wasted work on renders that don't touch it (every search
+  // keystroke, most filter changes) — only write the DOM when something it shows changed.
+  const sidebarSig = JSON.stringify([page, pending, !!installEvent, isStandalone(), !!SHEETS_URL, me?.email, me?.role, me?.name, savingCount, busyMsg, lastLoad]);
+  if (sidebarSig !== lastSidebarSig) {
+    lastSidebarSig = sidebarSig;
+    $("#sidebar").innerHTML = `<div class="brand"><div class="logo">${LOGO}</div>Haulwise</div><nav class="nav">${NAV.filter(([p]) => can(p)).map(([p, t, ic]) =>
+      `<a href="#/${p}" class="${page === p ? "active" : ""}">${icon(ic || p)}${esc(t)}${p === "team" && pending ? ` <span class="badge b-PENDING">${pending}</span>` : ""}</a>`).join("")}</nav>
+      <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
+      ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
+  }
   const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"),
     invoices: pageInvoices, reports: pageReports, team: pageTeam, settings: pageSettings};
   const section = pages[page] ? page : "dashboard";
@@ -1202,8 +1217,12 @@ document.addEventListener("input", e => {
     if (wrap) { const on = t.value.trim().toLowerCase() === OWNER_EMAIL; wrap.hidden = !on; const c = $("#a-setup"); if (c) c.required = on; }
     return;
   }
-  if (t.dataset.input === "search") { ui.q = t.value; const pos = t.selectionStart; render(); const n = $("#search"); if (n) { n.focus(); n.setSelectionRange(pos, pos); } }
+  if (t.dataset.input === "search") { const pos = t.selectionStart; debouncedSearch(t.value, pos); }
 });
+const debouncedSearch = debounce((value, pos) => {
+  ui.q = value; render();
+  const n = $("#search"); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+}, 150);
 document.addEventListener("change", e => {
   const t = e.target;
   if (t.dataset.filter) { ui.f[t.dataset.filter] = t.value; render(); return; }
@@ -1228,7 +1247,7 @@ document.addEventListener("input", e => {
     const form = t.form, w = t.dataset.city; form.elements[w + "Lat"].value = ""; form.elements[w + "Lng"].value = "";
     clearTimeout(cityTimers[w]); cityTimers[w] = setTimeout(() => showSuggestions(t), 250);
   } else if (t.form?.id === "entity-form" && ["brokerRate", "carrierRate", "miles"].includes(t.name)) {
-    if (t.name === "miles") { t.form.dataset.manual = "1"; t.form.dataset.est = ""; }
+    if (t.name === "miles") { t.form.dataset.manual = "1"; t.form.dataset.est = ""; if (t.form.elements.estimatedMiles) t.form.elements.estimatedMiles.value = ""; }
     renderRpm(t.form);
   }
 });
@@ -1244,11 +1263,11 @@ document.addEventListener("drop", e => { const c = e.target.closest?.(".col"); i
 /* =====================================================================
    10. CSV + JSON IMPORT / EXPORT, DEMO DATA
    ===================================================================== */
-const CSV_HEAD = ["Reference", "Status", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
+const CSV_HEAD = ["Reference", "Status", "Is Lane", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
 function download(name, text, mime = "text/csv") { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + text], {type: mime + ";charset=utf-8"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 const csvLine = a => a.map(v => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",");
 function exportCSV() {
-  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, nameOf("brokers", l.brokerId).replace("—", ""), l.dispatcherName, nameOf("drivers", l.driverId).replace("—", ""),
+  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, l.isLane ? "Yes" : "No", l.brokerName || "", l.dispatcherName, l.driverName || "",
     l.pickupLocation, l.pickupDate, l.deliveryLocation, l.deliveryDate, l.commodity, l.weightLbs, l.equipment, l.brokerRate, l.carrierRate, l.miles, l.rpm, l.notes]);
   download(`loads-${today()}.csv`, [CSV_HEAD, ...rows].map(csvLine).join("\r\n"));
 }
@@ -1265,18 +1284,37 @@ async function importCSV(text) {
   if (ix["pickup location"] == null || ix["delivery location"] == null) throw new Error("This doesn't look like a loads export (needs “Pickup Location” and “Delivery Location” columns).");
   const alias = {"broker": "customer", "broker rate": "customer rate"};
   const get = (r, name) => { const k = name.toLowerCase(); return (r[ix[k] ?? ix[alias[k]]] ?? "").trim(); };
-  const ensure = async (t, name) => { if (!name) return null; const f = state[t].find(x => x.name.toLowerCase() === name.toLowerCase()); return (f || await createRow(t, {name, ...(t === "drivers" ? {status: "ACTIVE"} : {})})).id; };
+  // Cache broker/driver name→id and the running max reference number once, rather than
+  // re-scanning state.brokers/drivers/loads (which only grows) for every imported row.
+  const nameCache = {brokers: new Map(state.brokers.map(b => [b.name.toLowerCase(), b.id])), drivers: new Map(state.drivers.map(d => [d.name.toLowerCase(), d.id]))};
+  const ensure = async (t, name) => {
+    if (!name) return null;
+    const key = name.toLowerCase(), cache = nameCache[t];
+    if (cache.has(key)) return cache.get(key);
+    const row = await createRow(t, {name, ...(t === "drivers" ? {status: "ACTIVE"} : {})});
+    cache.set(key, row.id); return row.id;
+  };
+  const loadsByRef = new Map(state.loads.map(l => [l.ref, l]));
+  let maxRef = 10000;
+  for (const l of state.loads) { const m = String(l.ref || "").match(/(\d+)$/); if (m) maxRef = Math.max(maxRef, +m[1]); }
   let made = 0, updated = 0, bad = 0;
   for (const r of rows) {
     const pu = new Date(get(r, "Pickup Date")), de = new Date(get(r, "Delivery Date"));
     if (!get(r, "Pickup Location") || !get(r, "Delivery Location") || isNaN(pu) || isNaN(de)) { bad++; continue; }
+    if (de <= pu) { bad++; continue; }
     const st = get(r, "Status").toUpperCase(), ref = get(r, "Reference");
-    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", brokerId: await ensure("brokers", get(r, "Broker")), driverId: await ensure("drivers", get(r, "Driver")),
+    const isLaneRaw = get(r, "Is Lane").toLowerCase();
+    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", isLane: ["yes", "true", "1"].includes(isLaneRaw), brokerId: await ensure("brokers", get(r, "Broker")), driverId: await ensure("drivers", get(r, "Driver")),
       pickupLocation: get(r, "Pickup Location"), pickupDate: pu.toISOString(), deliveryLocation: get(r, "Delivery Location"), deliveryDate: de.toISOString(), commodity: get(r, "Commodity") || null,
       weightLbs: get(r, "Weight (lbs)") ? Number(get(r, "Weight (lbs)")) : null, equipment: get(r, "Equipment") || null, brokerRate: Number(get(r, "Broker Rate")) || 0, carrierRate: Number(get(r, "Carrier Rate")) || 0, notes: get(r, "Notes") || null, miles: Number(get(r, "Miles")) > 0 ? Number(get(r, "Miles")) : null};
-    const existing = ref && state.loads.find(l => l.ref === ref);
+    const existing = ref && loadsByRef.get(ref);
     if (existing) { updateRow("loads", existing.id, data); updated++; }
-    else { const row = createRow("loads", {...data, ref: ref || nextNumber("LD", "loads", "ref"), dispatcherEmail: me?.email || null, dispatcherName: me?.name || null}); addTrack(row.id, data.status, data.pickupLocation, "Imported from CSV."); made++; }
+    else {
+      const newRef = ref || `LD-${++maxRef}`;
+      const row = createRow("loads", {...data, ref: newRef, dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
+      loadsByRef.set(newRef, row);
+      addTrack(row.id, data.status, data.pickupLocation, "Imported from CSV."); made++;
+    }
   }
   toast(`Imported: ${made} new, ${updated} updated${bad ? `, ${bad} skipped` : ""}`);
 }

@@ -109,8 +109,10 @@ function dispatch_(b) {
   if (a === "me") return { user: publicUser_(user), sheetUrl: sheetUrlFor_(user) };
   if (a === "loadAll") {
     var res = { user: publicUser_(user), sheetUrl: sheetUrlFor_(user), data: loadAll_(user) };
-    if (user.role === "owner") res.users = allUsers_().map(publicUser_);     // saves the Team page a second request
-    if (ASSIGNERS.indexOf(user.role) >= 0) res.roster = roster_();           // who loads/drivers can be assigned to
+    var needsUsers = user.role === "owner" || ASSIGNERS.indexOf(user.role) >= 0;
+    var users = needsUsers ? allUsers_() : null;                            // fetched once, not once per res.* below
+    if (user.role === "owner") res.users = users.map(publicUser_);          // saves the Team page a second request
+    if (ASSIGNERS.indexOf(user.role) >= 0) res.roster = roster_(users);     // who loads/drivers can be assigned to
     return res;
   }
   if (a === "save") return withLock_(function () { save_(user, b.ops || []); return { ok: true }; });
@@ -159,8 +161,8 @@ function allUsers_() {
 function newUser_(email, name, role, status) {
   return { id: Utilities.getUuid(), email: email, name: String(name || email).trim().slice(0, 100), role: role || "", status: status, salt: "", hash: "", rounds: HASH_ROUNDS, emailVerified: false, sv: 0, createdAt: new Date().toISOString() };
 }
-function roster_() {                                  // names only: no hashes, no status details
-  return allUsers_().filter(function (u) { return u.status === "active" && ["owner", "manager", "dispatcher"].indexOf(u.role) >= 0; })
+function roster_(users) {                             // names only: no hashes, no status details
+  return (users || allUsers_()).filter(function (u) { return u.status === "active" && ["owner", "manager", "dispatcher"].indexOf(u.role) >= 0; })
     .map(function (u) { return { email: u.email, name: u.name, role: u.role }; });
 }
 function publicUser_(u) {
@@ -357,8 +359,13 @@ function fixHeader_(sh, def, values) {
 }
 
 function sheetFor_(table) {
-  var sh = tab_(table), values = sh.getDataRange().getValues();
-  if (values.length <= 1) fixHeader_(sh, TABS[table], values);
+  // getLastRow() is metadata (cheap); avoids pulling the whole sheet (which callers
+  // like applyTable_ re-read their own way anyway) just to check if it's empty.
+  var sh = tab_(table);
+  if (sh.getLastRow() <= 1) {
+    var headerRow = sh.getLastRow() === 1 ? sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues() : [[]];
+    fixHeader_(sh, TABS[table], headerRow);
+  }
   return sh;
 }
 
