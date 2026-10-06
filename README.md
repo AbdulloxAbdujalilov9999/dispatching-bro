@@ -22,6 +22,11 @@ created and edited here. Ticking **Mark as lane** on a load's form is what
 makes it show up in Haulwise Loads' Lanes view — most loads aren't lanes, so
 the box starts unchecked.
 
+Loads read from an RC (see below) reach Haulwise Loads on their own, including the broker's
+**load #**, which Haulwise Loads shows, searches and exports. Every load page here has an
+**Open in Laneboard** button that opens Haulwise Loads on that load (filters cleared, card expanded,
+route drawn on the map); it signs in first if needed.
+
 ## Accounts and roles
 
 * **Owner** — `abdujalilov7707@gmail.com`. Can't be removed, disabled or demoted.

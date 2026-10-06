@@ -1000,7 +1000,7 @@ function pageLoad(id) {
   const docRow = (a, b, c) => `<div class="doc-row"><div>${a}</div><div class="actions">${b}${c || ""}</div></div>`;
   return `<p><a href="#/loads">← Loads</a></p>` +
   pageHead(l.ref, `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)} &nbsp; ${badge(l.status)}${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}`,
-    `${edit ? `<button class="btn" data-action="edit" data-table="loads" data-id="${l.id}">Edit</button>` : ""}${canDelete("loads") ? `<button class="btn danger" data-action="delete" data-table="loads" data-id="${l.id}" data-back="1">Delete</button>` : ""}`) +
+    `<a class="btn" href="${esc(LANEBOARD_URL + "#load=" + encodeURIComponent(l.ref))}" target="_blank" rel="noopener" title="Show this load on the map in Haulwise Loads">${icon("laneboard")}Open in Laneboard</a>${edit ? `<button class="btn" data-action="edit" data-table="loads" data-id="${l.id}">Edit</button>` : ""}${canDelete("loads") ? `<button class="btn danger" data-action="delete" data-table="loads" data-id="${l.id}" data-back="1">Delete</button>` : ""}`) +
   `<div class="grid g2">
     <div class="card card-pad"><h2>Route & cargo</h2><dl class="kv"><dt>Pickup</dt><dd>${esc(l.pickupLocation)}<div class="muted">${fmtDT(l.pickupDate)}</div></dd>
       <dt>Delivery</dt><dd>${esc(l.deliveryLocation)}<div class="muted">${fmtDT(l.deliveryDate)}</div></dd><dt>Commodity</dt><dd>${esc(l.commodity || "—")}</dd>
