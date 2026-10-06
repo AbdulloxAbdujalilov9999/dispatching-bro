@@ -62,6 +62,24 @@ it isn't just hidden on screen. The rules live in `apps-script/Code.gs`
   and average RPM (filter by period; click a name to see their loads). The dashboard shows a
   dispatcher their own loads and gross for the month.
 
+## AI: fill a load from the rate confirmation (RC)
+
+On **New load** (or Edit load) press **Upload RC** — or drop a PDF / photo onto the box — and an AI model
+reads it and fills in the broker (matched to a saved broker by MC number or name), the broker's load #,
+pickup and delivery city and date, commodity, equipment, weight, rate and notes. The cities are looked
+up on the map, so miles and RPM calculate as usual. Filled fields are outlined; check them, add the
+driver and save. If the RC doesn't say something, that field is left alone.
+
+* **The file is not stored anywhere** — it goes to the script, the AI reads it, and only the text fields come back.
+* The AI key lives in the script's **Script properties**, never in the website. Add **one** of:
+  * `ANTHROPIC_API_KEY` — Claude (pay per use, roughly a cent or two per RC; model `RC_MODEL`, default `claude-haiku-4-5-20251001`)
+  * `GEMINI_API_KEY` — Google AI Studio's free tier (model `GEMINI_MODEL`, default `gemini-2.5-flash`).
+    Free-tier requests may be used by Google to improve its products, so use a paid key if RC contents are sensitive.
+* After pasting the new `Code.gs`, **Deploy → Manage deployments → pencil → New version** (the script asks for permission to
+  contact external services the first time).
+* Everyone who can add loads (owner, manager, dispatcher, accounting) can use it; HR can't. Each person is limited to 40 RCs an hour.
+* PDFs up to about 5 MB; photos are shrunk in the browser before they are sent.
+
 ## Maps: city suggestions, miles and RPM
 
 On a load, *Pickup city* and *Delivery city* suggest cities as you type (US, plus Canada/Mexico).

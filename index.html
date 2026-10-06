@@ -172,6 +172,9 @@ body.local .refresh-btn { display:none; }
 .sug { display:flex; justify-content:space-between; gap:12px; width:100%; text-align:left; background:none; border:0; padding:9px 12px; cursor:pointer; color:var(--ink); font:inherit; }
 .sug:hover,.sug:focus { background:var(--panel2); outline:none; }
 .sug-note { padding:10px 12px; color:var(--soft); font-size:13px; }
+.rc-box { border:1.5px dashed var(--line); border-radius:12px; padding:14px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; background:var(--panel2); }
+.rc-box.over { border-color:var(--brand); } .rc-box.busy { opacity:.8; } .rc-box .rc-msg { flex:1; min-width:200px; font-size:13px; } .rc-box .rc-msg b { display:block; font-size:14px; }
+.ai-filled { border-color:var(--brand) !important; box-shadow:0 0 0 2px color-mix(in srgb, var(--brand) 25%, transparent); }
 .geo-info { padding:10px 12px; border-radius:9px; background:var(--panel2); font-size:13px; }
 .summary { display:flex; flex-wrap:wrap; gap:10px 28px; padding:12px 18px; margin-bottom:14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); }
 .summary b { font-size:17px; display:block; } .summary span { color:var(--soft); font-size:12px; }
@@ -413,9 +416,14 @@ function readCache() { try { const c = JSON.parse(localStorage.getItem("hw-cache
 
 /* A typed broker name is matched to a saved broker (ignoring case/extra spaces) or saved as a new one,
    so it shows up as a suggestion on every device the next time. */
-function ensureBroker(name) {
+function ensureBroker(name, extra = {}) {
   const n = String(name || "").replace(/\s+/g, " ").trim(); if (!n) return null;
-  return (state.brokers.find(c => c.name.toLowerCase() === n.toLowerCase()) || createRow("brokers", {name: n})).id;
+  const found = state.brokers.find(c => c.name.toLowerCase() === n.toLowerCase());
+  const details = Object.fromEntries(Object.entries(extra).filter(([, v]) => v));
+  if (!found) return createRow("brokers", {name: n, ...details}).id;
+  const gaps = Object.fromEntries(Object.entries(details).filter(([k]) => !found[k]));        // details read from an RC only fill blanks, never overwrite
+  if (Object.keys(gaps).length) updateRow("brokers", found.id, gaps);
+  return found.id;
 }
 function nextNumber(prefix, table, field) {
   let max = 10000;
@@ -628,6 +636,65 @@ async function ensureGeo(form) {
   }
   if (ptOf(form, "pickup") && ptOf(form, "delivery") && (form.elements.miles.value === "")) await updateMiles(form, true);
 }
+/* ---- AI: read a rate confirmation (RC) and fill the load form. The file is read once and never stored. ---- */
+const RC_PDF_MAX = 5 * 1024 * 1024, RC_ACCEPT = "application/pdf,image/jpeg,image/png,image/webp,image/gif";
+function rcBoxHtml() {
+  if (!SHEETS_URL) return "";                                                       // needs the script (it holds the AI key)
+  return `<div class="full"><div class="rc-box" id="rc-box"><div class="rc-msg" id="rc-msg"><b>Fill this load from the rate confirmation</b><span class="muted">Upload the RC (PDF or photo) and AI fills in the details. Check them, then save. The file itself isn't stored.</span></div>
+    <button type="button" class="btn primary" data-action="rc-pick">Upload RC</button><input type="file" id="rc-file" accept="${RC_ACCEPT}" hidden></div></div>`;
+}
+const fileToBase64 = file => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1] || ""); r.onerror = () => rej(new Error("That file couldn't be read.")); r.readAsDataURL(file); });
+async function rcPayload(file) {                                                     // photos are shrunk first: faster, and well under the size limits
+  if (file.type === "application/pdf") { if (file.size > RC_PDF_MAX) throw new Error("That PDF is over 5 MB. Try a smaller file or a photo of the page."); return {mime: file.type, data: await fileToBase64(file)}; }
+  if (!file.type.startsWith("image/")) throw new Error("Upload a PDF or a photo (JPG, PNG, WEBP).");
+  let bmp; try { bmp = await createImageBitmap(file); } catch { throw new Error("This browser can't open that image. Use a PDF, JPG or PNG."); }
+  const k = Math.min(1, 2000 / Math.max(bmp.width, bmp.height)), c = document.createElement("canvas"); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+  return {mime: "image/jpeg", data: c.toDataURL("image/jpeg", .88).split(",")[1]};
+}
+const rcSay = (form, html, busy) => { const m = $("#rc-msg", form), b = $("#rc-box", form); if (m) m.innerHTML = html; if (b) b.classList.toggle("busy", !!busy); };
+async function readRc(file) {
+  const form = $("#entity-form"); if (!form || form.dataset.table !== "loads" || !file) return;
+  const btn = $('[data-action="rc-pick"]', form), seq = form.dataset.rcSeq = String((+form.dataset.rcSeq || 0) + 1);
+  if (btn) btn.disabled = true;
+  rcSay(form, `<b>Reading ${esc(file.name)}…</b><span class="muted">This usually takes 5–20 seconds.</span>`, true);
+  try {
+    const r = await api("rc.extract", await rcPayload(file));
+    if (!form.isConnected || form.dataset.rcSeq !== seq) return;
+    const n = await fillFromRc(form, r.fields || {});
+    rcSay(form, n ? `<b>✓ Filled ${n} field${n === 1 ? "" : "s"} from ${esc(file.name)}</b><span class="muted">Highlighted fields came from the RC. Please check them, add the driver, then save.</span>` : `<b>Couldn't find load details in that file</b><span class="muted">Try a clearer copy, or fill the load in by hand.</span>`);
+  } catch (e) { if (form.isConnected && form.dataset.rcSeq === seq) rcSay(form, `<b style="color:var(--bad)">${esc(e.message)}</b><span class="muted">You can still fill the load in by hand.</span>`); }
+  if (btn?.isConnected) btn.disabled = false;
+}
+const normEquip = t => { const x = String(t || "").toLowerCase(); return !x ? "" : /reefer|refrig|temp/.test(x) ? "Reefer" : /step ?deck|stepdeck/.test(x) ? "Step Deck" : /flat/.test(x) ? "Flatbed" : /power only/.test(x) ? "Power Only" : /box/.test(x) ? "Box Truck" : /van|dry/.test(x) ? "Dry Van" : String(t).slice(0, 60); };
+const mcDigits = v => String(v || "").replace(/\D/g, "").replace(/^0+/, "");
+async function fillFromRc(form, f) {
+  let count = 0;
+  const put = (name, value) => { const el = form.elements[name]; if (!el || value == null || value === "") return false; el.value = value; el.classList.add("ai-filled"); count++; return true; };
+  // broker: match by MC number first, then by name; details are saved with the broker only if the load is saved
+  const mc = mcDigits(f.brokerMc), known = (mc && state.brokers.find(b => mcDigits(b.mcNumber) === mc)) || null;
+  if (put("brokerInput", known ? known.name : f.brokerName)) form.dataset.rcBroker = JSON.stringify({mcNumber: f.brokerMc, dotNumber: f.brokerDot, contactName: f.brokerContact, phone: f.brokerPhone, email: f.brokerEmail});
+  put("brokerLoadNumber", f.brokerLoadNumber); put("commodity", f.commodity); put("equipment", normEquip(f.equipment)); put("weightLbs", f.weightLbs); put("brokerRate", f.rate);
+  if (f.pickupDate) put("pickupDate", `${f.pickupDate}T${f.pickupTime || "08:00"}`);
+  if (f.deliveryDate) put("deliveryDate", `${f.deliveryDate}T${f.deliveryTime || "17:00"}`);
+  const pu = form.elements.pickupDate.value, de = form.elements.deliveryDate.value;                 // the RC gave only one date: keep the other one after it
+  if (pu && de && new Date(de) <= new Date(pu)) {
+    const shift = (v, days) => { const d = new Date(v); d.setDate(d.getDate() + days); return inputDT(d.toISOString()); };
+    if (f.pickupDate && !f.deliveryDate) form.elements.deliveryDate.value = shift(pu, 1); else if (f.deliveryDate && !f.pickupDate) form.elements.pickupDate.value = shift(de, -1);
+  }
+  if (f.notes) { const n = form.elements.notes; if (n) { n.value = n.value.trim() ? n.value.trim() + "\n" + f.notes : f.notes; n.classList.add("ai-filled"); count++; } }
+  for (const which of ["pickup", "delivery"]) {                                      // cities: look up the map position so miles and RPM calculate
+    const text = f[which + "City"]; if (!text) continue;
+    put(which + "Location", text); form.elements[which + "Lat"].value = ""; form.elements[which + "Lng"].value = "";
+    try { const c = (await citySuggest(text))[0]; if (c && form.isConnected) { form.elements[which + "Location"].value = c.label; form.elements[which + "Lat"].value = c.lat; form.elements[which + "Lng"].value = c.lng; } } catch {}
+  }
+  if (!form.isConnected) return count;
+  form.dataset.manual = ""; await updateMiles(form, true);
+  if (f.miles && !(Number(form.elements.miles.value) > 0)) { form.elements.miles.value = f.miles; form.dataset.manual = "1"; if (put("miles", f.miles)) renderRpm(form); }   // RC miles only if the map couldn't work them out
+  renderRpm(form);
+  return count;
+}
+
 /* =====================================================================
    4. ENTITY DEFINITIONS (forms + table columns)
    ===================================================================== */
@@ -664,9 +731,9 @@ const ENT = {
           {h:"Status",c:r=>badge(r.status)},
           {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
   loads: { title:"Load", plural:"Loads", sub:"",
-    fields:[{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
+    fields:[{k:"rcUpload",t:"rc"},{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
             {k:"dispatcherEmail",l:"Dispatcher",t:"dispatcher",full:1},
-            {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name",full:1},{k:"driverId",l:"Driver",t:"driver",full:1},
+            {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name"},{k:"brokerLoadNumber",l:"Broker load # (from the RC)"},{k:"driverId",l:"Driver",t:"driver",full:1},
             {k:"pickupLocation",l:"Pickup city",t:"city",geo:"pickup",req:1,ph:"Start typing a city…"},{k:"pickupDate",l:"Pickup date",t:"datetime-local",req:1},
             {k:"deliveryLocation",l:"Delivery city",t:"city",geo:"delivery",req:1,ph:"Start typing a city…"},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
             {k:"pickupLat",t:"hidden"},{k:"pickupLng",t:"hidden"},{k:"deliveryLat",t:"hidden"},{k:"deliveryLng",t:"hidden"},{k:"estimatedMiles",t:"hidden"},
@@ -697,6 +764,7 @@ function fieldHtml(f, val) {
       `<option value="${r.id}" ${r.id === v ? "selected" : ""}>${esc(f.ref === "loads" ? loadLabel(r) : r.name)}</option>`).join("")}</select>`;
   } else if (f.t === "broker") ctl = `<input class="input" id="${id}" name="${f.k}" list="broker-list" value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off" ${req}><datalist id="broker-list">${[...state.brokers].sort((a, b) => a.name.localeCompare(b.name)).map(c => `<option value="${esc(c.name)}">`).join("")}</datalist>`;
   else if (f.t === "hidden") return `<input type="hidden" name="${f.k}" value="${esc(v)}">`;
+  else if (f.t === "rc") return rcBoxHtml();
   else if (f.t === "geoinfo") return `<div class="full"><div class="geo-info" id="geo-summary"></div></div>`;
   else if (f.t === "city") ctl = `<div class="city-wrap"><input class="input" id="${id}" name="${f.k}" data-city="${f.geo}" value="${esc(v)}" placeholder="${esc(f.ph || "")}" autocomplete="off" ${req}><div class="suggest" id="sug-${f.geo}" hidden></div></div>`;
   else if (f.t === "driver") ctl = driverSelect(id, f, v, req);
@@ -750,7 +818,8 @@ async function saveEntity(table, id, data) {
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
     if (data.pickupDate && data.deliveryDate && new Date(data.deliveryDate) <= new Date(data.pickupDate)) throw new Error("Delivery date must be after the pickup date.");
     data.brokerRate ??= 0; data.carrierRate ??= 0;
-    if ("brokerInput" in data) { data.brokerId = ensureBroker(data.brokerInput); delete data.brokerInput; }
+    if ("brokerInput" in data) { data.brokerId = ensureBroker(data.brokerInput, data.rcBroker); delete data.brokerInput; }
+    delete data.rcBroker;
     if (!id) data.dispatcherEmail ||= me?.email || null;                     // a load is saved under the name of whoever adds it
     if ("dispatcherEmail" in data) data.dispatcherName = dispatcherName(data.dispatcherEmail);
   }
@@ -831,7 +900,7 @@ function loadMatches(l) {
   if (f.driver && l.driverId !== f.driver) return false;
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
-  return !ui.q || [l.ref, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, l.brokerName, l.driverName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+  return !ui.q || [l.ref, l.brokerLoadNumber, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, l.brokerName, l.driverName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
 }
 function loadsSummary(rows) {
   const live = rows.filter(l => l.status !== "CANCELLED"), sum = (a, k) => a.reduce((s, l) => s + Number(l[k] || 0), 0);
@@ -936,7 +1005,7 @@ function pageLoad(id) {
     <div class="card card-pad"><h2>Route & cargo</h2><dl class="kv"><dt>Pickup</dt><dd>${esc(l.pickupLocation)}<div class="muted">${fmtDT(l.pickupDate)}</div></dd>
       <dt>Delivery</dt><dd>${esc(l.deliveryLocation)}<div class="muted">${fmtDT(l.deliveryDate)}</div></dd><dt>Commodity</dt><dd>${esc(l.commodity || "—")}</dd>
       <dt>Equipment</dt><dd>${esc(l.equipment || "—")}</dd><dt>Weight</dt><dd>${l.weightLbs ? Number(l.weightLbs).toLocaleString() + " lbs" : "—"}</dd><dt>Notes</dt><dd>${esc(l.notes || "—")}</dd></dl></div>
-    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>      <dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
+    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>${l.brokerLoadNumber ? `<dt>Broker load #</dt><dd>${esc(l.brokerLoadNumber)}</dd>` : ""}      <dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
       <dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>
       ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi${l.estimatedMiles ? ' <span class="muted">(estimated)</span>' : ""}</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
   <div class="grid ${showInv ? "g2" : ""}" style="margin-top:16px">
@@ -1134,6 +1203,7 @@ const ACTIONS = {
   view: d => { ui.loadsView = d.v; localStorage.setItem("hw-loads-view", d.v); render(); },
   tab: d => { ui.tab = d.v; ui.f = {}; ui.q = ""; render(); },
   "clear-filters": () => { ui.f = {}; ui.q = ""; ui.status = ""; render(); },
+  "rc-pick": () => $("#rc-file")?.click(),
   "pick-city": d => { const c = geoUI[d.which]?.[+d.i]; if (c) pickCity(d.which, c); },
   "dispatcher-loads": d => { ui.f = {dispatcher: d.email}; ui.keepFilters = true; location.hash = "#/loads"; },
   theme: d => { setTheme(d.v); render(); },
@@ -1165,6 +1235,7 @@ document.addEventListener("submit", e => {
       if (btn) btn.disabled = true;
       if (t === "loads") await ensureGeo(f);                                                   // fill in any missing coordinates / miles first
       const data = readForm(f, t);
+      if (t === "loads" && f.dataset.rcBroker) data.rcBroker = JSON.parse(f.dataset.rcBroker);
       await act(async () => { await saveEntity(t, id || null, data); closeModal(); }, id ? "Saved" : "Created");
       if (btn?.isConnected) btn.disabled = false;
     })();
@@ -1224,6 +1295,14 @@ document.addEventListener("input", e => {
     if (t.name === "miles") { t.form.dataset.manual = "1"; t.form.dataset.est = ""; if (t.form.elements.estimatedMiles) t.form.elements.estimatedMiles.value = ""; }
     renderRpm(t.form);
   }
+});
+document.addEventListener("change", e => { if (e.target.id === "rc-file") { const f = e.target.files[0]; e.target.value = ""; readRc(f); } });
+document.addEventListener("dragover", e => { const b = e.target.closest?.("#rc-box"); if (b && e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); b.classList.add("over"); } });
+document.addEventListener("dragleave", e => e.target.closest?.("#rc-box")?.classList.remove("over"));
+document.addEventListener("drop", e => { const b = e.target.closest?.("#rc-box"); if (!b) return; e.preventDefault(); b.classList.remove("over"); readRc(e.dataTransfer.files[0]); });
+document.addEventListener("input", e => {
+  const t = e.target; if (t.classList?.contains("ai-filled")) t.classList.remove("ai-filled");
+  if (t.name === "brokerInput" && t.form?.dataset.rcBroker) delete t.form.dataset.rcBroker;      // a different broker was typed: don't attach the RC's broker details to it
 });
 document.addEventListener("click", e => { if (!e.target.closest?.(".city-wrap")) document.querySelectorAll(".suggest").forEach(b => { b.hidden = true; }); });
 
