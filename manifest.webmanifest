@@ -19,6 +19,7 @@
   ],
   "shortcuts": [
     { "name": "Loads", "short_name": "Loads", "url": "./#/loads", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
-    { "name": "Drivers", "short_name": "Drivers", "url": "./#/drivers", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+    { "name": "Drivers", "short_name": "Drivers", "url": "./#/drivers", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Laneboard", "short_name": "Laneboard", "url": "./laneboard/", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

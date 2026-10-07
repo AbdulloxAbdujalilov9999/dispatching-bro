@@ -336,7 +336,8 @@ const ICONS = {
   plus:'<path d="M12 5v14M5 12h14"/>',
   laneboard:'<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6"/><path d="M10 14L21 3"/>'
 };
-const LANEBOARD_URL = "https://laneboard-bro.vercel.app/"; // the Haulwise Loads companion app (read-only loads & lanes viewer)
+const LANEBOARD_URL = "laneboard/";   // Haulwise Loads / Laneboard: the read-only loads & lanes map that ships inside this site (laneboard/ folder)
+const dropLocalCopies = () => { localStorage.removeItem("hw-cache"); Object.keys(localStorage).filter(k => k.startsWith("hwl-cache:")).forEach(k => localStorage.removeItem(k)); };      // saved loads of this device, incl. Laneboard's
 const icon = n => `<svg class="i" viewBox="0 0 24 24">${ICONS[n] || ""}</svg>`;
 
 function toast(msg, kind = "") {
@@ -1217,7 +1218,7 @@ const ACTIONS = {
   "json-import": () => $("#json-file").click(),
   refresh: () => refresh(true),
   install: async () => { if (!installEvent) return; const ev = installEvent; ev.prompt(); const choice = await ev.userChoice.catch(() => ({})); installEvent = null; if (choice.outcome === "accepted") toast("Installing…"); render(); },
-  "sign-out": () => { localStorage.removeItem("hw-token"); localStorage.removeItem("hw-cache"); location.reload(); },
+  "sign-out": () => { localStorage.removeItem("hw-token"); dropLocalCopies(); location.reload(); },
   "auth-mode": d => { authMode = d.v; showAuth(); },
   "team-refresh": () => { team.users = null; team.error = ""; render(); },
   "team-approve": d => { const role = $("#role-" + d.id)?.value; if (!role) return toast("Choose a role first.", "error"); teamAction(() => api("users.update", {email: d.email, role, status: "active"}), "Approved — they can sign in now"); },
@@ -1318,7 +1319,7 @@ document.addEventListener("drop", e => { const c = e.target.closest?.(".col"); i
    ===================================================================== */
 const CSV_HEAD = ["Reference", "Status", "Is Lane", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
 function download(name, text, mime = "text/csv") { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + text], {type: mime + ";charset=utf-8"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
-const csvLine = a => a.map(v => { const s = String(v ?? ""); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",");
+const csvLine = a => a.map(v => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s) && isNaN(Number(s))) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",");
 function exportCSV() {
   const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, l.isLane ? "Yes" : "No", l.brokerName || "", l.dispatcherName, l.driverName || "",
     l.pickupLocation, l.pickupDate, l.deliveryLocation, l.deliveryDate, l.commodity, l.weightLbs, l.equipment, l.brokerRate, l.carrierRate, l.miles, l.rpm, l.notes]);
@@ -1416,7 +1417,7 @@ async function boot() {
   try { await loadAll(); if (!cached) ui.f = defaultFilters(); render(); if (SHEETS_URL && can("team")) loadTeam(); }
   catch (e) {
     console.error(e);
-    if (e.code === "auth") { localStorage.removeItem("hw-token"); localStorage.removeItem("hw-cache"); me = null; render(); return showAuth(e.message); }
+    if (e.code === "auth") { localStorage.removeItem("hw-token"); dropLocalCopies(); me = null; render(); return showAuth(e.message); }
     if (cached) { toast("Couldn't update — showing your last saved data. " + e.message, "error"); return; }
     $("#view").innerHTML = pageHead("Couldn't load data", "") + empty("Couldn't reach the database", e.message) + `<button class="btn primary" onclick="boot()">Try again</button>`;
   } finally { setBusy(""); }

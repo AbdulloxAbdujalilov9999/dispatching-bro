@@ -1,14 +1,15 @@
 /* Haulwise Dispatch — service worker.
    Makes the app installable and lets it open with no connection (last data is kept by the page itself).
    It never touches requests to Google Sheets (those are POSTs) or map/geocoding services. */
-const VERSION = "v2";                       // bump when the list of cached files changes
+const VERSION = "v3";                       // bump when the list of cached files changes
 const SHELL = "haulwise-shell-" + VERSION;
 const RUNTIME = "haulwise-runtime-" + VERSION;
 const PRECACHE = [
   "./", "./index.html", "./manifest.webmanifest",
   "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png",
   "./icons/icon-maskable-192.png", "./icons/icon-maskable-512.png",
-  "./icons/apple-touch-icon.png", "./icons/favicon-32.png", "./icons/favicon-48.png"
+  "./icons/apple-touch-icon.png", "./icons/favicon-32.png", "./icons/favicon-48.png",
+  "./laneboard/", "./laneboard/app.js", "./laneboard/data.js"
 ];
 
 self.addEventListener("install", event => {
@@ -28,17 +29,27 @@ self.addEventListener("fetch", event => {
   if (req.method !== "GET") return;                         // saving to Google Sheets is a POST: always live
   const url = new URL(req.url);
 
-  // The app page: network first, so a new deploy shows up straight away; the saved copy is used when offline.
+  // Pages (Dispatch and Laneboard): network first, so a new deploy shows up straight away; each page keeps its own saved copy for offline.
   if (req.mode === "navigate") {
+    const key = url.pathname.startsWith("/laneboard") ? "./laneboard/" : "./index.html";
     event.respondWith(
       fetch(req)
-        .then(res => { if (res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put("./index.html", copy)); } return res; })
-        .catch(() => caches.match("./index.html").then(hit => hit || caches.match("./")))
+        .then(res => { if (res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put(key, copy)); } return res; })
+        .catch(() => caches.match(key).then(hit => hit || caches.match("./")))
     );
     return;
   }
 
-  // Our own static files (icons, manifest): cache first.
+  // Our own scripts and styles: network first too (Laneboard's app.js changes with deploys); the saved copy is the offline fallback.
+  if (url.origin === self.location.origin && /\.(js|css|html)$/.test(url.pathname)) {
+    event.respondWith(
+      fetch(req).then(res => { if (res.ok) { const copy = res.clone(); caches.open(SHELL).then(c => c.put(req, copy)); } return res; })
+        .catch(() => caches.match(req, { ignoreSearch: true }))
+    );
+    return;
+  }
+
+  // Our own other static files (icons, manifest): cache first.
   if (url.origin === self.location.origin) {
     event.respondWith(
       caches.match(req, { ignoreSearch: true }).then(hit => hit || fetch(req).then(res => {

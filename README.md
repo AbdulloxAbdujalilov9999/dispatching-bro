@@ -10,22 +10,21 @@ brokers, drivers, invoices & settlements, reports, team, settings
 (light/dark). Filters on the pages that need them, a **Refresh** button, and it installs as an app. Invoices open as printable documents (Print → Save as PDF). Loads
 export/import as CSV.
 
-## Haulwise Loads (companion app)
+## Laneboard (loads & lanes map)
 
-[Haulwise Loads](https://github.com/AbdulloxAbdujalilov9999/laneboard) is a
-separate, read-only "loads & lanes" viewer with a bigger map and an expandable
-load list. It signs in with the same accounts as this app and reads loads
-through the same Apps Script backend (`loadAll`) — nothing to sync manually,
-and it respects the same role permissions (an HR account, for instance, sees
-none of it, same as here). It never writes anything back: loads are only
-created and edited here. Ticking **Mark as lane** on a load's form is what
-makes it show up in Haulwise Loads' Lanes view — most loads aren't lanes, so
-the box starts unchecked.
+Laneboard is a page of this same site (`laneboard/`, no separate app or repo). The **Open Laneboard** button
+in the sidebar opens it in a new window, and every load page has an **Open in Laneboard** button that opens
+it on that load (filters cleared, card expanded, route drawn on the map). It shares your sign-in with
+Dispatch, so there is no second login, and it respects the same roles (HR sees none of it).
 
-Loads read from an RC (see below) reach Haulwise Loads on their own, including the broker's
-**load #**, which Haulwise Loads shows, searches and exports. Every load page here has an
-**Open in Laneboard** button that opens Haulwise Loads on that load (filters cleared, card expanded,
-route drawn on the map); it signs in first if needed.
+It is read-only: a big map with every route, the loads as expandable cards (search, filters, week
+navigation, sorting, CSV export), and a **Lanes** tab that groups the loads ticked **Mark as lane** by
+`pickup region → delivery region`. It refreshes itself every 3 minutes. Loads read from an RC (see below)
+show up there too, including the broker's **load #**, which is searchable and exported.
+
+A link like `/laneboard/#load=LD-10001` opens a load directly (the value can also be the broker's load #).
+If the map library can't load, the list, filters and lanes still work. The old separate `laneboard`
+repository is no longer used and can be archived.
 
 ## Accounts and roles
 
@@ -159,7 +158,7 @@ Once installed, long-press / right-click the icon for shortcuts to **Loads** and
 Changes need a connection — while offline, edits are refused with a message rather than half-saved,
 and if a save fails the screen change is undone. When you're back online it updates by itself.
 
-Files: `manifest.webmanifest` (name, icons, colours), `sw.js` (service worker: keeps the app page
+Files: `laneboard/` (Laneboard), `manifest.webmanifest` (name, icons, colours), `sw.js` (service worker: keeps the app page
 and icons for offline use; never touches Google Sheets, maps or sign-in requests), `icons/`.
 Installing needs **HTTPS** (Vercel provides it) or `localhost`. After deploying, you can check it in
 Chrome → DevTools → *Application* → *Manifest* / *Service Workers*, or run a Lighthouse "PWA" audit.
