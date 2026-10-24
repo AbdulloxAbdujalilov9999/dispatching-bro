@@ -295,9 +295,9 @@ const db = SHEETS_URL ? adapters.sheets : adapters.local;
 /* =====================================================================
    3. STATE + HELPERS
    ===================================================================== */
-const TABLES = ["brokers","carriers","drivers","loads","tracking","invoices","settlements"];
+const TABLES = ["brokers","carriers","company","drivers","loads","tracking","invoices","settlements","fees"];
 const state = Object.fromEntries(TABLES.map(t => [t, []]));
-const ui = { q:"", status:"", tab:"invoices", loadsView: localStorage.getItem("hw-loads-view") || "board", f: {}, keepFilters: false };
+const ui = { q:"", status:"", tab:"fees", loadsView: localStorage.getItem("hw-loads-view") || "board", f: {}, keepFilters: false };
 const LOAD_STATUSES = ["BOOKED","DISPATCHED","IN_TRANSIT","DELIVERED","INVOICED","CANCELLED"];
 const $ = (s, r = document) => r.querySelector(s);
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -313,9 +313,24 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : "id" + Date.now().to
 const newest = (a, b) => (b.createdAt || "").localeCompare(a.createdAt || "");
 const byId = (t, id) => state[t].find(r => r.id === id);
 const nameOf = (t, id) => byId(t, id)?.name || "—";
-/* This platform works with ONE carrier: its details live in the owner's Settings. Every load, driver and settlement belongs to it. */
-const carrier = () => [...state.carriers].sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))[0] || null;
-const carrierLink = () => ({carrierId: carrier()?.id || null, carrierName: carrier()?.name || ""});
+/* The carriers you dispatch for (owner-operators and small fleets). Each load, driver and settlement belongs to one of them;
+   while there is only one carrier, anything without a carrier is linked to it. */
+const soleCarrier = () => state.carriers.length === 1 ? state.carriers[0] : null;
+const carrierLink = id => { const c = id ? byId("carriers", id) : soleCarrier(); return {carrierId: c?.id || null, carrierName: c?.name || ""}; };
+const company = () => state.company[0] || null;                         // your dispatch company (one row), printed on dispatch-fee invoices
+/* Dispatch fee: what the carrier owes you for a load. A fee typed on the load wins; otherwise it is the carrier's % of the broker rate. */
+const feePct = carrierId => Number(byId("carriers", carrierId)?.dispatchFeePct) || 0;
+const pctFee = (rate, carrierId) => Math.round(Number(rate || 0) * feePct(carrierId)) / 100;
+const loadFee = l => l.dispatchFee != null && l.dispatchFee !== "" ? Number(l.dispatchFee) : pctFee(l.brokerRate, l.carrierId);
+const FEE_LOAD_STATUSES = ["DELIVERED", "INVOICED"];
+const billedLoadIds = exceptFeeId => new Set(state.fees.filter(f => f.id !== exceptFeeId && f.status !== "VOID").flatMap(f => String(f.loadIds || "").split(",").filter(Boolean)));
+/* delivered loads of a carrier that no other (non-void) fee invoice has billed yet, optionally limited to delivery dates from..to */
+function unbilledLoads(carrierId, from, to, exceptFeeId) {
+  const billed = billedLoadIds(exceptFeeId);
+  return state.loads.filter(l => l.carrierId === carrierId && FEE_LOAD_STATUSES.includes(l.status) && !billed.has(l.id) && (() => {
+    const day = l.deliveryDate ? ymd(l.deliveryDate) : ""; return (!from || day >= from) && (!to || day <= to); })())
+    .sort((a, b) => (a.deliveryDate || "").localeCompare(b.deliveryDate || ""));
+}
 const inputDT = iso => { if (!iso) return ""; const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
 const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
 const today = () => new Date().toISOString().slice(0, 10);
@@ -382,13 +397,14 @@ async function act(fn, okMsg) {
 const nm = (t, id) => byId(t, id)?.name || "";
 const ref = id => byId("loads", id)?.ref || "";
 const DENORM = {
-  loads: r => ({brokerName: nm("brokers", r.brokerId), ...carrierLink(), driverName: nm("drivers", r.driverId),
+  loads: r => ({brokerName: nm("brokers", r.brokerId), ...carrierLink(r.carrierId), driverName: nm("drivers", r.driverId),
                 route: `${r.pickupLocation || ""} → ${r.deliveryLocation || ""}`, margin: Math.round((Number(r.brokerRate || 0) - Number(r.carrierRate || 0)) * 100) / 100,
                 rpm: perMile(r.brokerRate, r.miles), carrierRpm: perMile(r.carrierRate, r.miles)}),
-  drivers: r => ({...carrierLink()}),
+  drivers: r => ({...carrierLink(r.carrierId)}),
   tracking: r => ({loadRef: ref(r.loadId)}),
   invoices: r => ({loadRef: ref(r.loadId), brokerName: nm("brokers", r.brokerId)}),
-  settlements: r => ({loadRef: ref(r.loadId), ...carrierLink()})
+  settlements: r => ({loadRef: ref(r.loadId), ...carrierLink(r.carrierId || byId("loads", r.loadId)?.carrierId)}),
+  fees: r => ({...carrierLink(r.carrierId)})
 };
 function createRow(t, data) {
   const now = new Date().toISOString();
@@ -401,8 +417,8 @@ function updateRow(t, id, patch) {
   const p = {...patch, updatedAt: new Date().toISOString()};
   Object.assign(p, DENORM[t] ? DENORM[t]({...cur, ...p}) : {});
   Object.assign(cur, p); queue.push({op: "update", table: t, id, patch: p});
-  const fk = {brokers: "brokerId", drivers: "driverId"}[t];
-  if (fk && "name" in patch) for (const tb of ["loads", "drivers", "invoices", "settlements"])
+  const fk = {brokers: "brokerId", drivers: "driverId", carriers: "carrierId"}[t];
+  if (fk && "name" in patch) for (const tb of ["loads", "drivers", "invoices", "settlements", "fees"])
     for (const r of state[tb]) if (r[fk] === id && DENORM[tb]) { const d = DENORM[tb](r); if (Object.keys(d).some(k => d[k] !== r[k])) { Object.assign(r, d); queue.push({op: "update", table: tb, id: r.id, patch: d}); } }
   return cur;
 }
@@ -448,16 +464,17 @@ const SECTION = {
   dashboard: {view: EVERYONE, edit: []},
   loads:     {view: LOADS_VIEW, edit: ["owner", "manager", "dispatcher", "accounting"]},
   brokers:   {view: LOADS_VIEW, edit: ["owner", "manager", "dispatcher", "accounting"]},
-  carriers:  {view: EVERYONE, edit: ["owner"]},
+  carriers:  {view: EVERYONE, edit: ["owner", "manager"]},
+  company:   {view: EVERYONE, edit: ["owner"]},
   drivers:   {view: ["owner", "manager", "dispatcher", "hr"], edit: ["owner", "manager", "dispatcher", "hr"]},
   invoices:  {view: MONEY_ROLES, edit: MONEY_ROLES},
   reports:   {view: MONEY_ROLES, edit: []},
   team:      {view: ["owner"], edit: ["owner"]},
   settings:  {view: EVERYONE, edit: EVERYONE}
 };
-const TABLE_SECTION = {loads: "loads", tracking: "loads", brokers: "brokers", carriers: "carriers", drivers: "drivers", invoices: "invoices", settlements: "invoices"};
-const DELETE_ROLES = {loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"],
-  drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY_ROLES, settlements: MONEY_ROLES};
+const TABLE_SECTION = {loads: "loads", tracking: "loads", brokers: "brokers", carriers: "carriers", company: "company", drivers: "drivers", invoices: "invoices", settlements: "invoices", fees: "invoices"};
+const DELETE_ROLES = {loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"], company: ["owner"],
+  drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY_ROLES, settlements: MONEY_ROLES, fees: MONEY_ROLES};
 const can = (section, level = "view") => !!me && (SECTION[section]?.[level] || []).includes(me.role);
 const canTable = (t, level = "edit") => can(TABLE_SECTION[t], level);
 const canAssign = () => !!me && ["owner", "manager"].includes(me.role);
@@ -597,12 +614,20 @@ const ymd = d => { const x = new Date(d); return x.getFullYear() + "-" + String(
 /* ---- the load form: suggestions dropdown, miles, RPM ---- */
 const geoUI = {pickup: [], delivery: []}, cityTimers = {};
 const ptOf = (form, which) => { const a = form.elements[which + "Lat"]?.value, b = form.elements[which + "Lng"]?.value; return a !== "" && b !== "" && a != null && b != null ? {lat: +a, lng: +b} : null; };
+/* keep the load form's dispatch fee at the carrier's % of the rate until someone types a fee of their own */
+function syncFee(form) {
+  const el = form.elements.dispatchFee; if (!el || form.dataset.feeManual) return;
+  const cid = form.elements.carrierId?.value; el.value = cid && feePct(cid) ? pctFee(form.elements.brokerRate?.value, cid) : (el.value || "");
+}
 function renderRpm(form) {
   const box = $("#geo-summary", form); if (!box) return;
-  const miles = Number(form.elements.miles?.value), br = Number(form.elements.brokerRate?.value || 0), cr = Number(form.elements.carrierRate?.value || 0);
-  if (!(miles > 0)) { box.innerHTML = `<span class="muted">Pick the pickup and delivery city from the suggestions to get the driving miles and rate per mile — or type the miles yourself.</span>`; return; }
-  const a = perMile(br, miles), b = perMile(cr, miles), c = perMile(br - cr, miles), fmt = v => v == null ? "—" : "$" + v.toFixed(2);
-  box.innerHTML = `<b>${miles.toLocaleString()} mi</b>${form.dataset.est ? ' <span class="muted">(estimated)</span>' : ""} &nbsp;·&nbsp; Broker RPM <b>${fmt(a)}/mi</b> &nbsp;·&nbsp; Carrier RPM <b>${fmt(b)}/mi</b> &nbsp;·&nbsp; Margin <b>${money(br - cr)}</b> <span class="muted">(${fmt(c)}/mi)</span>`;
+  const miles = Number(form.elements.miles?.value), br = Number(form.elements.brokerRate?.value || 0);
+  syncFee(form);
+  const fee = form.elements.dispatchFee ? Number(form.elements.dispatchFee.value || 0) : null, cid = form.elements.carrierId?.value;
+  const feeText = fee != null ? ` &nbsp;·&nbsp; Dispatch fee <b>${money(fee)}</b>${cid && feePct(cid) ? ` <span class="muted">(${feePct(cid)}% of ${money(br)})</span>` : ""}` : "";
+  if (!(miles > 0)) { box.innerHTML = `<span class="muted">Pick the pickup and delivery city from the suggestions to get the driving miles and rate per mile — or type the miles yourself.</span>${feeText}`; return; }
+  const a = perMile(br, miles), fmt = v => v == null ? "—" : "$" + v.toFixed(2);
+  box.innerHTML = `<b>${miles.toLocaleString()} mi</b>${form.dataset.est ? ' <span class="muted">(estimated)</span>' : ""} &nbsp;·&nbsp; RPM <b>${fmt(a)}/mi</b>${feeText}`;
 }
 async function updateMiles(form, force) {
   const a = ptOf(form, "pickup"), b = ptOf(form, "delivery"); if (!a || !b) return renderRpm(form);
@@ -716,16 +741,29 @@ const ENT = {
           {h:"Contact",c:r=>`${esc(r.phone||"—")}<div class="muted">${esc(r.email||"")}</div>`},
           {h:"Terms",c:r=>esc(r.paymentTerms||"—")},
           {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
-  carriers: { title:"Carrier", plural:"Carrier", sub:"The carrier you dispatch for.",
-    fields:[{k:"name",l:"Carrier name",req:1,full:1},{k:"mcNumber",l:"MC number"},{k:"dotNumber",l:"DOT number"},{k:"address",l:"Address",full:1},
+  carriers: { title:"Carrier", plural:"Carriers", sub:"Owner-operators and fleets you dispatch for. Each one needs its own signed dispatch agreement before you book anything for it.",
+    fields:[{k:"name",l:"Carrier name",req:1,full:1},{k:"mcNumber",l:"MC number",ph:"MC-123456"},{k:"dotNumber",l:"DOT number",ph:"DOT-1234567"},{k:"address",l:"Address",full:1},
             {k:"contactName",l:"Contact person"},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email",t:"email"},
-            {k:"insuranceProvider",l:"Insurance provider"},{k:"insuranceExpiry",l:"Insurance expires",t:"date"},{k:"notes",l:"Notes (EIN, factoring, remit-to…)",t:"textarea",full:1}], cols:[] },
+            {k:"dispatchFeePct",l:"Dispatch fee (% of gross)",t:"number",step:"0.1",def:7},{k:"agreementDate",l:"Dispatch agreement signed on",t:"date"},
+            {k:"factoringCompany",l:"Factoring company (if any)"},{k:"status",l:"Status",t:"select",opts:STATUS_OPTS.carrier,def:"ACTIVE"},
+            {k:"insuranceProvider",l:"Insurance provider"},{k:"insuranceExpiry",l:"Insurance expires",t:"date"},{k:"notes",l:"Notes (EIN, equipment, lanes the carrier wants, remit-to…)",t:"textarea",full:1}],
+    cols:[{h:"Carrier",c:r=>`<span class="strong">${esc(r.name)}</span><div class="muted">${esc([r.contactName, r.phone].filter(Boolean).join(" · "))}</div>`},
+          {h:"MC / DOT",c:r=>r.mcNumber ? `${esc(r.mcNumber)}<div class="muted">${esc(r.dotNumber||"")}</div>` : `<span class="badge b-PENDING">Needs MC</span>`},
+          {h:"Fee",c:r=>r.dispatchFeePct != null && r.dispatchFeePct !== "" ? esc(r.dispatchFeePct) + "%" : `<span class="muted">—</span>`},
+          {h:"Agreement",c:r=>r.agreementDate ? "Signed " + fmtDate(r.agreementDate) : `<span class="badge b-OVERDUE">Not signed</span>`},
+          {h:"Insurance",c:r=>r.insuranceExpiry ? (r.insuranceExpiry < today() ? `<span class="badge b-OVERDUE">Expired ${fmtDate(r.insuranceExpiry)}</span>` : "Exp " + fmtDate(r.insuranceExpiry)) : `<span class="muted">—</span>`},
+          {h:"Status",c:r=>badge(r.status || "ACTIVE")},
+          {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
+  company: { title:"Dispatch company", plural:"Dispatch company", sub:"",
+    fields:[{k:"name",l:"Your dispatch company name",req:1,full:1},{k:"address",l:"Address",full:1},{k:"contactName",l:"Contact person"},{k:"phone",l:"Phone",t:"tel"},
+            {k:"email",l:"Email",t:"email"},{k:"ein",l:"EIN"},{k:"paymentInstructions",l:"How carriers pay you (Zelle, ACH details…) — printed on dispatch-fee invoices",t:"textarea",full:1}], cols:[] },
   drivers: { title:"Driver", plural:"Drivers", sub:"Drivers, trucks and trailers.",
     fields:[{k:"name",l:"Driver name",req:1,full:1},{k:"phone",l:"Phone",t:"tel"},{k:"email",l:"Email (optional)",t:"email",full:1},
-            {k:"dispatcherEmail",l:"Assigned dispatcher",t:"dispatcher",none:1,full:1},
+            {k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",full:1},{k:"dispatcherEmail",l:"Assigned dispatcher",t:"dispatcher",none:1,full:1},
             {k:"licenseNumber",l:"License # (optional)"},{k:"licenseExpiry",l:"License expiration date (optional)",t:"date"},{k:"truckNumber",l:"Truck #"},{k:"trailerNumber",l:"Trailer #"},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.driver,def:"ACTIVE"},{k:"notes",l:"Notes",t:"textarea",full:1}],
     cols:[{h:"Driver",c:r=>`<span class="strong">${esc(r.name)}</span><div class="muted">${esc(r.phone||"")}</div>`},
+          {h:"Carrier",c:r=>r.carrierName ? esc(r.carrierName) : `<span class="muted">—</span>`},
           {h:"Dispatcher",c:r=>r.dispatcherName ? esc(r.dispatcherName) : `<span class="muted">Unassigned</span>`},
           {h:"Equipment",c:r=>esc([r.truckNumber,r.trailerNumber].filter(Boolean).join(" / ")||"—")},
           {h:"License",c:r=>`${esc(r.licenseNumber||"—")}<div class="muted">${r.licenseExpiry?"Exp "+fmtDate(r.licenseExpiry):""}</div>`},
@@ -733,18 +771,21 @@ const ENT = {
           {h:"Loads",c:r=>loadCountByFk.get(r.id)||0}] },
   loads: { title:"Load", plural:"Loads", sub:"",
     fields:[{k:"rcUpload",t:"rc"},{k:"ref",l:"Reference #",ph:"Auto"},{k:"status",l:"Status",t:"select",opts:LOAD_STATUSES,def:"BOOKED"},
-            {k:"dispatcherEmail",l:"Dispatcher",t:"dispatcher",full:1},
+            {k:"dispatcherEmail",l:"Dispatcher",t:"dispatcher",full:1},{k:"carrierId",l:"Carrier (the one this load is booked for)",t:"ref",ref:"carriers",full:1},
             {k:"brokerInput",l:"Broker",t:"broker",ph:"Type the broker name"},{k:"brokerLoadNumber",l:"Broker load # (from the RC)"},{k:"driverId",l:"Driver",t:"driver",full:1},
             {k:"pickupLocation",l:"Pickup city",t:"city",geo:"pickup",req:1,ph:"Start typing a city…"},{k:"pickupDate",l:"Pickup date",t:"datetime-local",req:1},
             {k:"deliveryLocation",l:"Delivery city",t:"city",geo:"delivery",req:1,ph:"Start typing a city…"},{k:"deliveryDate",l:"Delivery date",t:"datetime-local",req:1},
             {k:"pickupLat",t:"hidden"},{k:"pickupLng",t:"hidden"},{k:"deliveryLat",t:"hidden"},{k:"deliveryLng",t:"hidden"},{k:"estimatedMiles",t:"hidden"},
             {k:"commodity",l:"Commodity"},{k:"equipment",l:"Equipment",t:"equip"},{k:"weightLbs",l:"Weight (lbs)",t:"number"},
-            {k:"brokerRate",l:"Broker rate ($)",t:"number",step:"0.01",def:0},{k:"carrierRate",l:"Carrier rate ($)",t:"number",step:"0.01",def:0},
+            {k:"brokerRate",l:"Rate from the broker ($)",t:"number",step:"0.01",def:0},{k:"dispatchFee",l:"Dispatch fee ($) — carrier's % unless you change it",t:"number",step:"0.01"},
             {k:"miles",l:"Miles (filled in from the cities)",t:"number",step:"0.1"},{k:"geoinfo",t:"geoinfo",full:1},
             {k:"isLane",l:"Mark as lane — include this route in Haulwise Loads' Lanes view",t:"checkbox"},
             {k:"notes",l:"Notes",t:"textarea",full:1}] },
   invoices: { title:"Invoice", plural:"Invoices", sub:"",
     fields:[{k:"loadId",l:"Load (the broker is taken from the load)",t:"ref",ref:"loads",req:1,full:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
+            {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.invoice,def:"DRAFT"},{k:"dueDate",l:"Due date",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}] },
+  fees: { title:"Dispatch-fee invoice", plural:"Dispatch-fee invoices", sub:"",
+    fields:[{k:"carrierId",l:"Carrier",t:"ref",ref:"carriers",req:1,full:1},{k:"periodFrom",l:"Loads delivered from",t:"date",req:1},{k:"periodTo",l:"to",t:"date",req:1},
             {k:"status",l:"Status",t:"select",opts:STATUS_OPTS.invoice,def:"DRAFT"},{k:"dueDate",l:"Due date",t:"date"},{k:"notes",l:"Notes",t:"textarea",full:1}] },
   settlements: { title:"Settlement", plural:"Settlements", sub:"",
     fields:[{k:"loadId",l:"Load",t:"ref",ref:"loads",req:1,full:1},{k:"amount",l:"Amount ($)",t:"number",step:"0.01",req:1},
@@ -790,13 +831,15 @@ function dispatcherSelect(id, f, v) {
 function openForm(table, id, preset = {}) {
   const E = ENT[table], row = id ? byId(table, id) : null;
   let data = row || preset;
-  if (!row && table === "loads") { data.pickupDate ||= addDays(1).toISOString(); data.deliveryDate ||= addDays(2).toISOString(); data.dispatcherEmail ||= me?.email; }
+  if (!row && table === "loads") { data.pickupDate ||= addDays(1).toISOString(); data.deliveryDate ||= addDays(2).toISOString(); data.dispatcherEmail ||= me?.email; data.carrierId ||= soleCarrier()?.id; }
+  if (!row && table === "drivers") data.carrierId ||= soleCarrier()?.id;
+  if (!row && table === "fees") { data.dueDate ||= addDays(7).toISOString().slice(0, 10); data.periodTo ||= today(); data.periodFrom ||= ymd(addDays(-7)); }
   if (table === "loads" && !("brokerInput" in data)) data = {...data, brokerInput: nm("brokers", data.brokerId)};
   if (!row && table === "invoices") data.dueDate ||= addDays(30).toISOString().slice(0, 10);
   const body = `<form id="entity-form" data-table="${table}" data-id="${id || ""}"><div class="form-grid">${E.fields.map(f => fieldHtml(f, data[f.k])).join("")}</div></form>`;
   openModal(`${row ? "Edit" : "New"} ${E.title.toLowerCase()}`, body,
     `<button class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit" form="entity-form">${row ? "Save changes" : "Create"}</button>`);
-  if (table === "loads") renderRpm($("#entity-form"));
+  if (table === "loads") { const form = $("#entity-form"); if (row && row.dispatchFee != null && row.dispatchFee !== "" && Number(row.dispatchFee) !== pctFee(row.brokerRate, row.carrierId)) form.dataset.feeManual = "1"; renderRpm(form); }
 }
 
 function readForm(form, table) {
@@ -813,12 +856,17 @@ function readForm(form, table) {
 }
 
 async function saveEntity(table, id, data) {
-  if (table === "carriers") { if (!id && carrier()) throw new Error("The carrier is already set up — edit it instead."); if (!id) data.status = "ACTIVE"; }
+  if (table === "company" && !id && company()) throw new Error("Your dispatch company is already set up — edit it instead.");
+  if (table === "carriers" && state.carriers.some(c => c.id !== id && String(c.name || "").trim().toLowerCase() === data.name.toLowerCase())) throw new Error(`A carrier called ${data.name} already exists.`);
+  if (table === "drivers" && !data.carrierId) data.carrierId = soleCarrier()?.id || null;
   if (table === "loads") {
     data.ref ||= nextNumber("LD", "loads", "ref");
     if (state.loads.some(l => l.ref === data.ref && l.id !== id)) throw new Error(`Reference ${data.ref} already exists.`);
     if (data.pickupDate && data.deliveryDate && new Date(data.deliveryDate) <= new Date(data.pickupDate)) throw new Error("Delivery date must be after the pickup date.");
-    data.brokerRate ??= 0; data.carrierRate ??= 0;
+    data.brokerRate ??= 0;
+    if (!data.carrierId) data.carrierId = byId("drivers", data.driverId)?.carrierId || soleCarrier()?.id || null;
+    if (state.carriers.length > 1 && !data.carrierId) throw new Error("Pick the carrier this load is booked for.");
+    if (data.dispatchFee == null) data.dispatchFee = pctFee(data.brokerRate, data.carrierId);
     if ("brokerInput" in data) { data.brokerId = ensureBroker(data.brokerInput, data.rcBroker); delete data.brokerInput; }
     delete data.rcBroker;
     if (!id) data.dispatcherEmail ||= me?.email || null;                     // a load is saved under the name of whoever adds it
@@ -831,7 +879,14 @@ async function saveEntity(table, id, data) {
     data.brokerId = l.brokerId;
   }
   if (!id && table === "invoices") data.invoiceNumber = nextNumber("INV", "invoices", "invoiceNumber");
-  if (table === "carriers") { if (id) updateRow(table, id, data); else createRow(table, data); syncCarrier(); return; }
+  if (table === "fees") {
+    if (data.periodTo < data.periodFrom) throw new Error("The end date must be on or after the start date.");
+    const loads = unbilledLoads(data.carrierId, data.periodFrom, data.periodTo, id);
+    if (!loads.length) throw new Error("This carrier has no delivered loads in those dates that aren't billed yet.");
+    Object.assign(data, {loadIds: loads.map(l => l.id).join(","), loadRefs: loads.map(l => l.ref).join(", "),
+      gross: Math.round(loads.reduce((s, l) => s + Number(l.brokerRate || 0), 0) * 100) / 100, amount: Math.round(loads.reduce((s, l) => s + loadFee(l), 0) * 100) / 100});
+    if (!id) data.feeNumber = nextNumber("DF", "fees", "feeNumber");
+  }
   if (id) {
     const oldStatus = byId(table, id).status;
     updateRow(table, id, data);
@@ -849,16 +904,11 @@ function setLoadStatus(id, status, note, location) {
   addTrack(id, status, location || l.pickupLocation, note || `Status updated to ${label(status)}.`);
 }
 
-/* after the carrier's details change, refresh the carrier name/link stored on loads, drivers and settlements */
-function syncCarrier() {
-  const link = carrierLink();
-  for (const tb of ["loads", "drivers", "settlements"]) for (const r of state[tb])
-    if (r.carrierId !== link.carrierId || r.carrierName !== link.carrierName) { Object.assign(r, link); queue.push({op: "update", table: tb, id: r.id, patch: {...link}}); }
-}
-
 /* deletes honour the old database rules: loads cascade, carriers/brokers with paperwork are protected */
 function deleteEntity(table, id) {
   if (table === "brokers" && state.invoices.some(i => i.brokerId === id)) throw new Error("This broker has invoices and can't be deleted.");
+  if (table === "carriers" && (state.loads.some(l => l.carrierId === id) || state.fees.some(f => f.carrierId === id))) throw new Error("This carrier has loads or fee invoices and can't be deleted. Set its status to Inactive instead.");
+  if (table === "carriers") for (const d of state.drivers.filter(d => d.carrierId === id)) updateRow("drivers", d.id, {carrierId: null});
   if (table === "loads") for (const t of ["tracking", "invoices", "settlements"]) for (const r of state[t].filter(r => r.loadId === id)) removeRow(t, r.id);
   if (table === "brokers") for (const l of state.loads.filter(l => l.brokerId === id)) updateRow("loads", l.id, {brokerId: null});
   if (table === "drivers") for (const l of state.loads.filter(l => l.driverId === id)) updateRow("loads", l.id, {driverId: null});
@@ -899,19 +949,22 @@ function loadMatches(l) {
   if (!dispatcherMatch(l.dispatcherEmail, f.dispatcher)) return false;
   if (f.broker && l.brokerId !== f.broker) return false;
   if (f.driver && l.driverId !== f.driver) return false;
+  if (f.carrier && l.carrierId !== f.carrier) return false;
   if (f.from && day < f.from) return false;
   if (f.to && day > f.to) return false;
-  return !ui.q || [l.ref, l.brokerLoadNumber, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, l.brokerName, l.driverName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+  return !ui.q || [l.ref, l.brokerLoadNumber, l.pickupLocation, l.deliveryLocation, l.commodity, l.dispatcherName, l.brokerName, l.driverName, l.carrierName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
 }
 function loadsSummary(rows) {
   const live = rows.filter(l => l.status !== "CANCELLED"), sum = (a, k) => a.reduce((s, l) => s + Number(l[k] || 0), 0);
-  const gross = sum(live, "brokerRate"), cost = sum(live, "carrierRate"), withMiles = live.filter(l => Number(l.miles) > 0), miles = sum(withMiles, "miles"), rpm = perMile(sum(withMiles, "brokerRate"), miles);
+  const gross = sum(live, "brokerRate"), fees = live.reduce((s, l) => s + loadFee(l), 0), withMiles = live.filter(l => Number(l.miles) > 0), miles = sum(withMiles, "miles"), rpm = perMile(sum(withMiles, "brokerRate"), miles);
   const chip = (k, v) => `<div><b>${v}</b><span>${k}</span></div>`;
-  return `<div class="summary">${chip("Loads", live.length)}${chip("Gross (broker rate)", money(gross))}${chip("Carrier cost", money(cost))}${chip("Margin", money(gross - cost))}${chip("Avg RPM", rpm != null ? "$" + rpm.toFixed(2) + "/mi" : "—")}</div>`;
+  return `<div class="summary">${chip("Loads", live.length)}${chip("Gross (broker rate)", money(gross))}${can("invoices") ? chip("Dispatch fees", money(fees)) : ""}${chip("Avg RPM", rpm != null ? "$" + rpm.toFixed(2) + "/mi" : "—")}</div>`;
 }
 const ENTITY_FILTERS = {
   drivers: {ui: () => fSelect("status", "All statuses", STATUS_OPTS.driver.map(s => [s, label(s)])) + fSelect("dispatcher", "All dispatchers", [["__none", "Unassigned"], ...dispatcherFilterOptions(state.drivers)]),
             match: d => (!ui.f.status || d.status === ui.f.status) && dispatcherMatch(d.dispatcherEmail, ui.f.dispatcher)},
+  carriers: {ui: () => fSelect("status", "All statuses", STATUS_OPTS.carrier.map(s => [s, label(s)])) + fSelect("agreement", "Agreement", [["missing", "Not signed"], ["ok", "Signed"]]),
+            match: c => (!ui.f.status || (c.status || "ACTIVE") === ui.f.status) && (!ui.f.agreement || (ui.f.agreement === "missing" ? !c.agreementDate : !!c.agreementDate))},
   brokers: {ui: () => fSelect("terms", "All payment terms", PAYMENT_TERMS.map(t => [t, t])) + fSelect("mc", "MC number", [["missing", "Needs MC"], ["ok", "Has MC"]]),
             match: b => (!ui.f.terms || b.paymentTerms === ui.f.terms) && (!ui.f.mc || (ui.f.mc === "missing" ? !b.mcNumber : !!b.mcNumber))}
 };
@@ -946,10 +999,13 @@ function pageDashboard() {
   const stat = (k, v, ic) => `<div class="card stat"><div><div class="k">${k}</div><div class="v">${v}</div></div><div class="ic">${icon(ic)}</div></div>`;
   const cards = [];
   if (can("loads")) cards.push(stat("Active loads", state.loads.filter(l => ["BOOKED", "DISPATCHED", "IN_TRANSIT"].includes(l.status)).length, "loads"));
-  if (showMoney) cards.push(stat("Total booked revenue", money(loads.reduce((s, l) => s + Number(l.brokerRate), 0)), "invoices"), stat("Outstanding invoices", money(outstanding), "invoices"));
+  const thisMonth = loads.filter(l => l.pickupDate && ymd(l.pickupDate).slice(0, 7) === ymd(new Date()).slice(0, 7));
+  const feesOwed = state.fees.filter(f => ["SENT", "OVERDUE"].includes(invStatus(f))).reduce((s, f) => s + Number(f.amount || 0), 0);
+  if (showMoney) cards.push(stat("Dispatch fees this month", money(thisMonth.reduce((s, l) => s + loadFee(l), 0)), "invoices"), stat("Fees carriers owe you", money(feesOwed), "invoices"));
+  if (showMoney && outstanding) cards.push(stat("Outstanding broker invoices", money(outstanding), "invoices"));
   if (me?.role === "dispatcher") { const mine = activeLoads().filter(l => l.dispatcherEmail === me.email && l.pickupDate && ymd(l.pickupDate).slice(0, 7) === ymd(new Date()).slice(0, 7)); cards.push(stat("My loads this month", mine.length, "loads"), stat("My gross this month", money(mine.reduce((s, l) => s + Number(l.brokerRate || 0), 0)), "invoices")); }
   if (can("drivers")) cards.push(stat("Active drivers", state.drivers.filter(d => d.status === "ACTIVE").length, "drivers"));
-  const quick = [["loads", "Book a new load"], ["brokers", "Add a broker"], ["drivers", "Add a driver"], ["invoices", "Create an invoice"]]
+  const quick = [["loads", "Book a new load"], ["carriers", "Add a carrier"], ["brokers", "Add a broker"], ["drivers", "Add a driver"], ["invoices", "Create an invoice"]]
     .filter(([t]) => canTable(t, "edit")).map(([t, text]) => `<button class="btn" data-action="new" data-table="${t}">${icon("plus")}${text}</button>`).join("");
   return pageHead("Dashboard", `Welcome${me?.name ? ", " + esc(me.name.split(" ")[0]) : ""}. Overview of your dispatch operation.`, canTable("loads", "edit") ? newBtn("loads", "New load") : "") +
   (cards.length ? `<div class="grid g4">${cards.join("")}</div>` : "") +
@@ -963,6 +1019,7 @@ function pageDashboard() {
 const loadCols = () => [
   {h: "Reference", c: l => `<a class="strong" href="#/loads/${l.id}">${esc(l.ref)}</a>${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}`},
   {h: "Route", c: l => `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}`},
+  {h: "Carrier", c: l => esc(l.carrierName || "—")},
   {h: "Broker", c: l => esc(l.brokerName || "—")},
   {h: "Dispatcher", c: l => l.dispatcherName ? esc(l.dispatcherName) : `<span class="muted">—</span>`},
   {h: "Pickup", c: l => fmtDate(l.pickupDate)},
@@ -978,7 +1035,7 @@ function pageLoads() {
   const bar = `<div class="toolbar">${searchBox("Search loads…")}
     <select class="select" data-input="status">${["", ...LOAD_STATUSES].map(s => `<option value="${s}" ${ui.status === s ? "selected" : ""}>${s ? label(s) : "All statuses"}</option>`).join("")}</select>
     ${fSelect("dispatcher", "All dispatchers", [["__none", "No dispatcher"], ...dispatcherFilterOptions(state.loads)])}
-    ${fSelect("broker", "All brokers", fOptions(state.brokers))}${fSelect("driver", "All drivers", fOptions(state.drivers))}
+    ${state.carriers.length > 1 ? fSelect("carrier", "All carriers", fOptions(state.carriers)) : ""}${fSelect("broker", "All brokers", fOptions(state.brokers))}${fSelect("driver", "All drivers", fOptions(state.drivers))}
     ${fDate("from", "Pickup from")}${fDate("to", "to")}${clearBtn()}
     <div class="seg" style="margin-left:auto"><button class="${ui.loadsView === "board" ? "on" : ""}" data-action="view" data-v="board">Board</button><button class="${ui.loadsView === "list" ? "on" : ""}" data-action="view" data-v="list">List</button></div></div>`;
   if (ui.loadsView === "list")
@@ -988,7 +1045,7 @@ function pageLoads() {
     return `<div class="col" data-col="${s}"><div class="col-h">${badge(s)}<span>${items.length}</span></div>${items.map(l =>
       `<a class="lcard" href="#/loads/${l.id}" draggable="${edit}" data-load="${l.id}"><div class="ref">${esc(l.ref)}${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}</div><div class="route">${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}</div>
        <div class="meta"><span>${esc(l.brokerName || "—")}</span><span class="strong">${money(l.brokerRate)}</span></div><div class="meta"><span>${fmtDate(l.pickupDate)}</span><span>${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : ""}</span></div>
-       ${l.dispatcherName ? `<div class="meta"><span>${esc(l.dispatcherName)}</span></div>` : ""}</a>`).join("")}</div>`; }).join("")}</div>
+       ${l.carrierName || l.dispatcherName ? `<div class="meta"><span>${esc(l.carrierName || "")}</span><span>${esc(l.dispatcherName || "")}</span></div>` : ""}</a>`).join("")}</div>`; }).join("")}</div>
     ${edit ? `<p class="muted">Tip: drag a card to another column to change its status.</p>` : ""}`;
 }
 
@@ -997,7 +1054,8 @@ function pageLoad(id) {
   if (!l) return pageHead("Load not found", "") + empty("This load doesn't exist", "It may have been deleted.") + `<a href="#/loads">← Back to loads</a>`;
   const edit = canTable("loads", "edit"), showInv = can("invoices"), editInv = canTable("invoices", "edit");
   const invs = state.invoices.filter(i => i.loadId === id), sets = state.settlements.filter(s => s.loadId === id);
-  const margin = Number(l.brokerRate) - Number(l.carrierRate);
+  const margin = Number(l.brokerRate) - Number(l.carrierRate), brokered = Number(l.carrierRate) > 0;     // carrier rate / margin only exist on older loads that were brokered
+  const fee = state.fees.find(f => f.status !== "VOID" && String(f.loadIds || "").split(",").includes(l.id));
   const docRow = (a, b, c) => `<div class="doc-row"><div>${a}</div><div class="actions">${b}${c || ""}</div></div>`;
   return `<p><a href="#/loads">← Loads</a></p>` +
   pageHead(l.ref, `${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)} &nbsp; ${badge(l.status)}${l.isLane ? ` <span class="badge" style="--c:#c026d3">Lane</span>` : ""}`,
@@ -1006,9 +1064,10 @@ function pageLoad(id) {
     <div class="card card-pad"><h2>Route & cargo</h2><dl class="kv"><dt>Pickup</dt><dd>${esc(l.pickupLocation)}<div class="muted">${fmtDT(l.pickupDate)}</div></dd>
       <dt>Delivery</dt><dd>${esc(l.deliveryLocation)}<div class="muted">${fmtDT(l.deliveryDate)}</div></dd><dt>Commodity</dt><dd>${esc(l.commodity || "—")}</dd>
       <dt>Equipment</dt><dd>${esc(l.equipment || "—")}</dd><dt>Weight</dt><dd>${l.weightLbs ? Number(l.weightLbs).toLocaleString() + " lbs" : "—"}</dd><dt>Notes</dt><dd>${esc(l.notes || "—")}</dd></dl></div>
-    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>${l.brokerLoadNumber ? `<dt>Broker load #</dt><dd>${esc(l.brokerLoadNumber)}</dd>` : ""}      <dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd><dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd>
-      <dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>
-      ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi${l.estimatedMiles ? ' <span class="muted">(estimated)</span>' : ""}</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd><dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}</dl></div></div>
+    <div class="card card-pad"><h2>Parties & money</h2><dl class="kv"><dt>Broker</dt><dd>${esc(l.brokerName || "—")}</dd>${l.brokerLoadNumber ? `<dt>Broker load #</dt><dd>${esc(l.brokerLoadNumber)}</dd>` : ""}      <dt>Carrier</dt><dd>${esc(l.carrierName || "—")}</dd><dt>Driver</dt><dd>${esc(l.driverName || "—")}</dd><dt>Dispatcher</dt><dd>${esc(l.dispatcherName || "—")}</dd><dt>Broker rate</dt><dd>${money(l.brokerRate)}</dd>
+      ${showInv ? `<dt>Dispatch fee</dt><dd class="strong">${money(loadFee(l))}${fee ? ` <span class="muted">· billed on ${esc(fee.feeNumber)}</span>` : ""}</dd>` : ""}
+      ${brokered ? `<dt>Carrier rate</dt><dd>${money(l.carrierRate)}</dd><dt>Margin</dt><dd class="strong" style="color:${margin >= 0 ? "var(--good)" : "var(--bad)"}">${money(margin)}</dd>` : ""}
+      ${l.miles ? `<dt>Distance</dt><dd>${Math.round(l.miles).toLocaleString()} mi${l.estimatedMiles ? ' <span class="muted">(estimated)</span>' : ""}</dd><dt>Broker RPM</dt><dd class="strong">${l.rpm != null ? "$" + Number(l.rpm).toFixed(2) + "/mi" : "—"}</dd>${brokered ? `<dt>Carrier RPM</dt><dd>${l.carrierRpm != null ? "$" + Number(l.carrierRpm).toFixed(2) + "/mi" : "—"}</dd>` : ""}` : ""}</dl></div></div>
   <div class="grid ${showInv ? "g2" : ""}" style="margin-top:16px">
     <div class="card card-pad"><h2>Tracking</h2>
       ${edit ? `<form data-form="tracking" data-id="${l.id}" class="grid" style="gap:8px;margin-bottom:16px">
@@ -1026,26 +1085,46 @@ function pageEntity(key) {
   const E = ENT[key], F = ENTITY_FILTERS[key], edit = canTable(key, "edit");
   if (key === "brokers") loadCountByFk = countBy(state.loads, "brokerId");
   else if (key === "drivers") loadCountByFk = countBy(state.loads, "driverId");
+  else if (key === "carriers") loadCountByFk = countBy(state.loads, "carrierId");
   const rows = [...state[key]].sort(newest).filter(matchQ).filter(r => !F || F.match(r));
   return pageHead(E.plural, E.sub, edit ? newBtn(key, "New " + E.title.toLowerCase()) : "") + `<div class="toolbar">${searchBox("Search " + E.plural.toLowerCase() + "…")}${F ? F.ui() : ""}${clearBtn()}</div>
     <div class="card">${table(E.cols, rows, {emptyTitle: "No " + E.plural.toLowerCase() + " found", emptySub: hasFilters() ? "Try clearing a filter." : edit ? "Click “New” to add one." : "", actions: (edit || canDelete(key)) ? r => editDel(key, r.id) : undefined})}</div>`;
 }
 
 const invToolbar = tab => `<div class="toolbar">${searchBox("Search…")}${fSelect("status", "All statuses", (tab === "settlements" ? STATUS_OPTS.settlement : STATUS_OPTS.invoice).map(s => [s, label(s)]))}${clearBtn()}</div>`;
-const invSearch = r => !ui.q || [r.invoiceNumber, r.loadRef, r.brokerName, r.carrierName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+const invSearch = r => !ui.q || [r.invoiceNumber, r.feeNumber, r.loadRef, r.loadRefs, r.brokerName, r.carrierName].join(" ").toLowerCase().includes(ui.q.toLowerCase());
+
+/* what each carrier owes you: delivered loads not on a fee invoice yet, with a button that bills them */
+function unbilledCard() {
+  const rows = state.carriers.map(c => { const loads = unbilledLoads(c.id); return {c, loads, fee: loads.reduce((s, l) => s + loadFee(l), 0), from: loads[0]?.deliveryDate}; }).filter(r => r.loads.length);
+  if (!rows.length) return "";
+  return `<div class="card" style="margin-bottom:14px"><div class="card-pad" style="padding-bottom:0"><h2>Not billed yet</h2><p class="muted" style="margin:-6px 0 0">Delivered loads that aren't on a dispatch-fee invoice.</p></div>
+  ${table([{h: "Carrier", c: r => `<span class="strong">${esc(r.c.name)}</span>`}, {h: "Loads", c: r => r.loads.length}, {h: "Delivered since", c: r => fmtDate(r.from)}, {h: "Fees", cls: "nowrap", c: r => `<span class="strong">${money(r.fee)}</span>`}], rows,
+    {actions: r => `<button class="btn sm primary" data-action="new" data-table="fees" data-carrier="${esc(r.c.id)}" data-from="${esc(ymd(r.from))}">Bill these loads</button>`})}</div>`;
+}
 
 function pageInvoices() {
-  const tabs = `<div class="seg" style="margin-bottom:14px"><button class="${ui.tab === "invoices" ? "on" : ""}" data-action="tab" data-v="invoices">Invoices</button><button class="${ui.tab === "settlements" ? "on" : ""}" data-action="tab" data-v="settlements">Carrier settlements</button></div>`;
+  const tabs = `<div class="seg" style="margin-bottom:14px"><button class="${ui.tab === "fees" ? "on" : ""}" data-action="tab" data-v="fees">Dispatch fees</button><button class="${ui.tab === "invoices" ? "on" : ""}" data-action="tab" data-v="invoices">Broker invoices</button><button class="${ui.tab === "settlements" ? "on" : ""}" data-action="tab" data-v="settlements">Carrier settlements</button></div>`;
+  const sub = "What carriers owe you for dispatching, what brokers owe, and what you owe carriers.";
+  if (ui.tab === "fees") {
+    const cols = [{h: "Invoice #", c: f => `<span class="strong">${esc(f.feeNumber)}</span>`}, {h: "Carrier", c: f => esc(f.carrierName || "—")},
+      {h: "Loads delivered", c: f => `${fmtDate(f.periodFrom)} – ${fmtDate(f.periodTo)}<div class="muted">${esc(f.loadRefs || "")}</div>`},
+      {h: "Gross", cls: "nowrap", c: f => money(f.gross)}, {h: "Fee", cls: "nowrap", c: f => `<span class="strong">${money(f.amount)}</span>`}, {h: "Due", c: f => fmtDate(f.dueDate)}, {h: "Status", c: f => badge(invStatus(f))}];
+    return pageHead("Invoices & settlements", sub, newBtn("fees", "New fee invoice")) + tabs + unbilledCard() + invToolbar("fees") + `<div class="card">${table(cols, [...state.fees].sort(newest).filter(invSearch).filter(f => !ui.f.status || invStatus(f) === ui.f.status), {emptyTitle: "No dispatch-fee invoices yet", emptySub: "When a carrier's loads are delivered, bill your fee here (weekly works well).", actions: f =>
+      `<button class="btn sm" data-action="view-doc" data-kind="fee" data-id="${f.id}">View / Print</button>` +
+      (f.status === "DRAFT" ? `<button class="btn sm" data-action="set-status" data-table="fees" data-id="${f.id}" data-s="SENT">Mark sent</button>` : "") +
+      (!["PAID", "VOID"].includes(f.status) ? `<button class="btn sm" data-action="set-status" data-table="fees" data-id="${f.id}" data-s="PAID">Mark paid</button>` : "") + editDel("fees", f.id)})}</div>`;
+  }
   const loadLink = r => { const l = byId("loads", r.loadId); return l ? `<a href="#/loads/${l.id}">${esc(l.ref)}</a>` : "—"; };
   if (ui.tab === "settlements") {
     const cols = [{h: "Load", c: loadLink}, {h: "Amount", cls: "nowrap", c: s => money(s.amount)}, {h: "Status", c: s => badge(s.status)}, {h: "Paid", c: s => fmtDate(s.paidAt)}];
-    return pageHead("Invoices & settlements", "What brokers owe you and what you owe carriers.", newBtn("settlements", "New settlement")) + tabs + invToolbar("settlements") + `<div class="card">${table([...cols], [...state.settlements].sort(newest).filter(invSearch).filter(s => !ui.f.status || s.status === ui.f.status), {emptyTitle: "No settlements yet", actions: s =>
+    return pageHead("Invoices & settlements", sub, newBtn("settlements", "New settlement")) + tabs + invToolbar("settlements") + `<div class="card">${table([...cols], [...state.settlements].sort(newest).filter(invSearch).filter(s => !ui.f.status || s.status === ui.f.status), {emptyTitle: "No settlements yet", actions: s =>
       (s.status === "PENDING" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="APPROVED">Approve</button>` : "") +
       (s.status !== "PAID" ? `<button class="btn sm" data-action="set-status" data-table="settlements" data-id="${s.id}" data-s="PAID">Mark paid</button>` : "") + editDel("settlements", s.id)})}</div>`;
   }
   const cols = [{h: "Invoice #", c: i => `<span class="strong">${esc(i.invoiceNumber)}</span>`}, {h: "Load", c: loadLink}, {h: "Broker", c: i => esc(i.brokerName || "—")},
     {h: "Amount", cls: "nowrap", c: i => money(i.amount)}, {h: "Due", c: i => fmtDate(i.dueDate)}, {h: "Status", c: i => badge(invStatus(i))}];
-  return pageHead("Invoices & settlements", "What brokers owe you and what you owe carriers.", newBtn("invoices", "New invoice")) + tabs + invToolbar("invoices") + `<div class="card">${table(cols, [...state.invoices].sort(newest).filter(invSearch).filter(i => !ui.f.status || invStatus(i) === ui.f.status), {emptyTitle: "No invoices yet", emptySub: "Invoice a delivered load.", actions: i =>
+  return pageHead("Invoices & settlements", sub, newBtn("invoices", "New invoice")) + tabs + invToolbar("invoices") + `<div class="card">${table(cols, [...state.invoices].sort(newest).filter(invSearch).filter(i => !ui.f.status || invStatus(i) === ui.f.status), {emptyTitle: "No invoices yet", emptySub: "Invoice a delivered load.", actions: i =>
     `<button class="btn sm" data-action="view-doc" data-kind="invoice" data-id="${i.id}">View / Print</button>` +
     (i.status === "DRAFT" ? `<button class="btn sm" data-action="set-status" data-table="invoices" data-id="${i.id}" data-s="SENT">Mark sent</button>` : "") +
     (!["PAID", "VOID"].includes(i.status) ? `<button class="btn sm" data-action="set-status" data-table="invoices" data-id="${i.id}" data-s="PAID">Mark paid</button>` : "") +
@@ -1055,8 +1134,8 @@ function pageInvoices() {
 function dispatcherRows(loads) {
   const m = new Map();
   for (const l of loads) {
-    const key = l.dispatcherEmail || "__none", r = m.get(key) || {email: key, name: l.dispatcherName || "No dispatcher", loads: 0, gross: 0, cost: 0, miles: 0, milesGross: 0};
-    r.loads++; r.gross += Number(l.brokerRate || 0); r.cost += Number(l.carrierRate || 0);
+    const key = l.dispatcherEmail || "__none", r = m.get(key) || {email: key, name: l.dispatcherName || "No dispatcher", loads: 0, gross: 0, fees: 0, miles: 0, milesGross: 0};
+    r.loads++; r.gross += Number(l.brokerRate || 0); r.fees += loadFee(l);
     if (Number(l.miles) > 0) { r.miles += Number(l.miles); r.milesGross += Number(l.brokerRate || 0); }
     m.set(key, r);
   }
@@ -1066,23 +1145,26 @@ function dispatcherCard(loads) {
   const rows = dispatcherRows(loads);
   return `<div class="card" style="margin-top:16px"><div class="card-pad" style="padding-bottom:0"><h2>Dispatcher performance</h2><p class="muted" style="margin:-6px 0 0">Loads each dispatcher booked and the gross they made. Click a name to see their loads.</p></div>
   ${table([{h: "Dispatcher", c: r => `<a class="strong" href="#/loads" data-action="dispatcher-loads" data-email="${esc(r.email)}">${esc(r.name)}</a>`}, {h: "Loads", c: r => r.loads}, {h: "Gross", cls: "nowrap", c: r => `<span class="strong">${money(r.gross)}</span>`},
-    {h: "Carrier cost", cls: "nowrap", c: r => money(r.cost)}, {h: "Margin", cls: "nowrap", c: r => money(r.gross - r.cost)}, {h: "Avg RPM", cls: "nowrap", c: r => r.miles ? "$" + perMile(r.milesGross, r.miles).toFixed(2) + "/mi" : "—"}], rows, {emptyTitle: "No loads in this period"})}</div>`;
+    {h: "Dispatch fees", cls: "nowrap", c: r => money(r.fees)}, {h: "Avg RPM", cls: "nowrap", c: r => r.miles ? "$" + perMile(r.milesGross, r.miles).toFixed(2) + "/mi" : "—"}], rows, {emptyTitle: "No loads in this period"})}</div>`;
 }
 function pageReports() {
   const [from, to] = periodRange(ui.f.period);
   const loads = activeLoads().filter(l => { const day = l.pickupDate ? ymd(l.pickupDate) : ""; return (!from || day >= from) && (!to || day <= to); }), months = lastMonths(6);
-  const rev = sumBy(loads, l => monthKey(l.pickupDate), l => Number(l.brokerRate)), cost = sumBy(loads, l => monthKey(l.pickupDate), l => Number(l.carrierRate));
-  const totalRev = loads.reduce((s, l) => s + Number(l.brokerRate), 0), totalCost = loads.reduce((s, l) => s + Number(l.carrierRate), 0);
+  const rev = sumBy(loads, l => monthKey(l.pickupDate), l => Number(l.brokerRate)), feeM = sumBy(loads, l => monthKey(l.pickupDate), loadFee);
+  const totalRev = loads.reduce((s, l) => s + Number(l.brokerRate), 0), totalFees = loads.reduce((s, l) => s + loadFee(l), 0);
+  const paid = state.fees.filter(f => f.status === "PAID" && f.paidAt && (!from || ymd(f.paidAt) >= from) && (!to || ymd(f.paidAt) <= to)).reduce((s, f) => s + Number(f.amount || 0), 0);
+  const unpaid = state.fees.filter(f => ["SENT", "OVERDUE"].includes(invStatus(f))).reduce((s, f) => s + Number(f.amount || 0), 0);
   const top = (obj, nameT) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id, v]) => [nameOf(nameT, id), v]);
   const hbars = (items, fmt = money) => { const max = Math.max(1, ...items.map(i => i[1])); return items.map(([n, v]) => `<div class="hbar"><div class="r"><span>${esc(n)}</span><b>${fmt(v)}</b></div><div class="t"><i style="width:${(v / max) * 100}%"></i></div></div>`).join("") || `<div class="muted">No data yet.</div>`; };
   const statusCounts = LOAD_STATUSES.map(s => [label(s), state.loads.filter(l => l.status === s).length]);
   const stat = (k, v) => `<div class="card stat"><div><div class="k">${k}</div><div class="v">${v}</div></div></div>`;
-  return pageHead("Reports", "Revenue, cost and margin across your loads.", fSelect("period", "All time", [["month", "This month"], ["lastmonth", "Last month"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["year", "This year"]])) +
-  `<div class="grid g4">${stat("Revenue", money(totalRev))}${stat("Carrier cost", money(totalCost))}${stat("Gross margin", money(totalRev - totalCost))}${stat("Margin %", totalRev ? ((totalRev - totalCost) / totalRev * 100).toFixed(1) + "%" : "—")}</div>
-  <div class="grid g21" style="margin-top:16px"><div class="card card-pad"><h2>Revenue vs. carrier cost</h2><div class="legend"><span><i></i>Revenue</span><span><i class="alt"></i>Cost</span></div>${chartBars(months, [{name: "Revenue", data: rev}, {name: "Cost", data: cost, cls: "alt"}])}</div>
+  return pageHead("Reports", "Gross booked for your carriers and the dispatch fees you earned.", fSelect("period", "All time", [["month", "This month"], ["lastmonth", "Last month"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["year", "This year"]])) +
+  `<div class="grid g4">${stat("Gross booked", money(totalRev))}${stat("Dispatch fees earned", money(totalFees))}${stat("Fees paid to you", money(paid))}${stat("Fees still owed (all time)", money(unpaid))}</div>
+  <div class="grid g21" style="margin-top:16px"><div class="card card-pad"><h2>Gross vs. dispatch fees</h2><div class="legend"><span><i></i>Gross</span><span><i class="alt"></i>Fees</span></div>${chartBars(months, [{name: "Gross", data: rev}, {name: "Fees", data: feeM, cls: "alt"}])}</div>
   <div class="card card-pad"><h2>Loads by status</h2>${hbars(statusCounts, v => v)}</div></div>
   ${dispatcherCard(loads)}
-  <div class="card card-pad" style="margin-top:16px"><h2>Top brokers by revenue</h2>${hbars(top(sumBy(loads, l => l.brokerId, l => Number(l.brokerRate)), "brokers"))}</div>`;
+  <div class="grid g2" style="margin-top:16px"><div class="card card-pad"><h2>Dispatch fees by carrier</h2>${hbars(top(sumBy(loads, l => l.carrierId, loadFee), "carriers"))}</div>
+  <div class="card card-pad"><h2>Top brokers by revenue</h2>${hbars(top(sumBy(loads, l => l.brokerId, l => Number(l.brokerRate)), "brokers"))}</div></div>`;
 }
 
 function pageTeam() {
@@ -1095,7 +1177,7 @@ function pageTeam() {
   const how = u => [u.hasPassword ? "Password" : "", u.emailVerified ? "Google" : ""].filter(Boolean).join(" + ") || "—";
   const person = u => `<span class="strong">${esc(u.name)}</span><div class="muted">${esc(u.email)}</div>`;
   const area = (title, section) => [title, ...EVERYONE.map(r => SECTION[section].edit.includes(r) ? "Edit" : SECTION[section].view.includes(r) ? "View" : "—")];
-  const perm = [["Loads & tracking", "loads"], ["Brokers", "brokers"], ["Drivers", "drivers"], ["Invoices & settlements", "invoices"], ["Reports & revenue", "reports"]].map(([t, sec]) => area(t, sec));
+  const perm = [["Loads & tracking", "loads"], ["Carriers", "carriers"], ["Brokers", "brokers"], ["Drivers", "drivers"], ["Invoices & settlements", "invoices"], ["Reports & revenue", "reports"]].map(([t, sec]) => area(t, sec));
   const permCols = ["Area", ...EVERYONE.map(r => ROLE_LABELS[r])].map((h, i) => ({h, c: r => i ? (r[i] === "—" ? `<span class="muted">—</span>` : esc(r[i])) : `<span class="strong">${esc(r[0])}</span>`}));
   return head +
   `<div class="card" style="margin-bottom:16px"><div class="card-pad" style="padding-bottom:0"><h2>Access requests ${pending.length ? `<span class="badge b-PENDING">${pending.length}</span>` : ""}</h2></div>
@@ -1106,7 +1188,7 @@ function pageTeam() {
     {h: "Status", c: u => u.status === "active" ? badge("ACTIVE") : `<span class="badge b-INACTIVE">Turned off</span>`}, {h: "Signs in with", c: u => esc(how(u))}], members,
     {emptyTitle: "Nobody yet", actions: u => u.role === "owner" ? "" : `<button class="btn sm" data-action="team-toggle" data-email="${esc(u.email)}" data-to="${u.status === "active" ? "disabled" : "active"}">${u.status === "active" ? "Turn off" : "Turn on"}</button><button class="btn sm" data-action="team-reset" data-email="${esc(u.email)}">Set password</button><button class="btn sm danger" data-action="team-remove" data-email="${esc(u.email)}">Remove</button>`})}</div>
   <div class="card"><div class="card-pad" style="padding-bottom:0"><h2>What each role can do</h2></div>${table(permCols, perm)}
-    <p class="muted" style="padding:0 20px 16px;margin:0">HR never sees rates, revenue, invoices or reports. Every load is saved under the name of whoever adds it; only Owner and Manager can assign loads and drivers to a dispatcher. Only Owner and Manager can delete loads and brokers. Only the Owner can edit the carrier details. Only the Owner sees this page and the Google Sheet link.</p></div>`;
+    <p class="muted" style="padding:0 20px 16px;margin:0">HR never sees rates, revenue, invoices or reports. Every load is saved under the name of whoever adds it; only Owner and Manager can assign loads and drivers to a dispatcher. Only Owner and Manager can delete loads and brokers. Owner and Manager add and edit carriers; only the Owner edits your dispatch company details. Only the Owner sees this page and the Google Sheet link.</p></div>`;
 }
 
 function pageSettings() {
@@ -1116,11 +1198,11 @@ function pageSettings() {
       ${me.hasPassword ? `<label class="f">Current password</label><input class="input" name="current" type="password" required autocomplete="current-password">` : `<p class="muted" style="margin-top:0">You sign in with Google. A password lets you also sign in with your email.</p>`}
       <label class="f" style="margin-top:8px">New password (at least 8 characters)</label><input class="input" name="next" type="password" minlength="8" required autocomplete="new-password">
       <div class="actions" style="margin-top:10px"><button class="btn primary" type="submit">Save password</button><button class="btn" type="button" data-action="sign-out">Sign out</button></div></form></div>` : "";
-  const co = carrier(), row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : "";
-  const carrierCard = owner ? `<div class="card card-pad"><h2>Your carrier</h2><p class="muted" style="margin-top:-6px">The carrier this platform dispatches for. Saved to the Google Sheet and printed on invoices.</p>
-    ${co ? `<dl class="kv"><dt>Name</dt><dd class="strong">${esc(co.name)}</dd>${row("MC number", co.mcNumber)}${row("DOT number", co.dotNumber)}${row("Address", co.address)}${row("Contact", co.contactName)}${row("Phone", co.phone)}${row("Email", co.email)}${row("Insurance", [co.insuranceProvider, co.insuranceExpiry ? "expires " + fmtDate(co.insuranceExpiry) : ""].filter(Boolean).join(" · "))}${row("Notes", co.notes)}</dl>
-      <div class="actions" style="margin-top:12px"><button class="btn primary" data-action="edit" data-table="carriers" data-id="${esc(co.id)}">Edit carrier</button></div>`
-    : `<p class="muted">No carrier yet. Add its name, MC and DOT numbers, insurance and contact.</p><button class="btn primary" data-action="new" data-table="carriers">Add carrier</button>`}</div>` : "";
+  const co = company(), row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : "";
+  const carrierCard = owner ? `<div class="card card-pad"><h2>Your dispatch company</h2><p class="muted" style="margin-top:-6px">Printed at the top of the dispatch-fee invoices you send carriers. The carriers you dispatch for are on the <a href="#/carriers">Carriers</a> page.</p>
+    ${co ? `<dl class="kv"><dt>Name</dt><dd class="strong">${esc(co.name)}</dd>${row("Address", co.address)}${row("Contact", co.contactName)}${row("Phone", co.phone)}${row("Email", co.email)}${row("EIN", co.ein)}${row("Payment", co.paymentInstructions)}</dl>
+      <div class="actions" style="margin-top:12px"><button class="btn primary" data-action="edit" data-table="company" data-id="${esc(co.id)}">Edit details</button></div>`
+    : `<p class="muted">Not set up yet. Add your company name, contact details and how carriers pay you.</p><button class="btn primary" data-action="new" data-table="company">Add your company</button>`}</div>` : "";
   const sheets = owner ? `<div class="card card-pad"><h2>Google Sheets</h2>
     <p class="muted" style="margin-top:-6px">${SHEETS_URL ? "Connected — every change is saved to your spreadsheet. Only you can see this." : "Not connected — data is only saved in this browser."}</p>
     <form data-form="sheets"><label class="f">Web app URL</label><input class="input" name="url" value="${esc(SHEETS_URL)}" placeholder="https://script.google.com/macros/s/…/exec">
@@ -1134,7 +1216,7 @@ function pageSettings() {
     : installEvent ? `<p class="muted" style="margin-top:-6px">Add Haulwise to your device: it opens in its own window and starts faster.</p><button class="btn primary" data-action="install">Install app</button>`
     : isIOS() ? `<p class="muted" style="margin:0">On iPhone or iPad: tap the <b>Share</b> button in Safari, then <b>Add to Home Screen</b>.</p>`
     : `<p class="muted" style="margin:0">Use your browser's menu: <b>Install app</b> (Chrome, Edge) or <b>Add to Home screen</b> (Android). If you don't see it, open this page in Chrome, Edge or Safari.</p>`}</div>`;
-  return pageHead("Settings", "Your account, carrier and appearance.") +
+  return pageHead("Settings", "Your account, company and appearance.") +
   `<div class="grid g2"><div class="grid" style="align-content:start">${account}${carrierCard}</div>
   <div class="grid" style="align-content:start">${installCard}<div class="card card-pad"><h2>Appearance</h2><div class="seg"><button class="${!dark ? "on" : ""}" data-action="theme" data-v="light">Light</button><button class="${dark ? "on" : ""}" data-action="theme" data-v="dark">Dark</button></div></div>${sheets}${csvCard}${data}</div></div>`;
 }
@@ -1143,12 +1225,28 @@ function pageSettings() {
    7. PRINTABLE DOCUMENTS
    ===================================================================== */
 function docHtml(kind, id) {
-  const k = carrier() || {}, co = `<div class="strong">${esc(k.name || "Your carrier")}</div><div>${esc([k.mcNumber, k.dotNumber].filter(Boolean).join(" · "))}</div><div>${esc(k.address || "")}</div><div>${esc([k.phone, k.email].filter(Boolean).join(" · "))}</div>`;
+  if (kind === "fee") return feeDocHtml(id);
   const i = byId("invoices", id), l = byId("loads", i.loadId) || {}, c = byId("brokers", i.brokerId) || {};
+  const k = byId("carriers", l.carrierId) || soleCarrier() || {}, co = `<div class="strong">${esc(k.name || "Carrier")}</div><div>${esc([k.mcNumber, k.dotNumber].filter(Boolean).join(" · "))}</div><div>${esc(k.address || "")}</div><div>${esc([k.phone, k.email].filter(Boolean).join(" · "))}</div>`;
   return `<div class="doc"><div class="row"><div><h1>Invoice</h1><div class="sub">${esc(i.invoiceNumber)} · ${fmtDate(i.createdAt)}</div></div><div style="text-align:right">${co}</div></div>
     <div class="row"><div><h3>Bill to</h3><div class="strong">${esc(c.name || "—")}</div><div>${esc(c.addressLine || "")}</div><div>${esc([c.city, c.state, c.zip].filter(Boolean).join(", "))}</div></div><div><h3>Due date</h3>${fmtDate(i.dueDate)}<h3 style="margin-top:10px">Status</h3>${esc(label(invStatus(i)))}</div></div>
     <table><tr><th>Description</th><th style="text-align:right">Amount</th></tr><tr><td>Freight ${esc(l.ref || "")}: ${esc(l.pickupLocation || "")} → ${esc(l.deliveryLocation || "")}</td><td style="text-align:right">${money(i.amount)}</td></tr></table>
     <div style="text-align:right"><h3>Total due</h3><div class="total">${money(i.amount)}</div></div>${i.notes ? `<h3 style="margin-top:20px">Notes</h3><p>${esc(i.notes)}</p>` : ""}</div>`;
+}
+
+/* the invoice you send a carrier for your dispatch fee: one line per delivered load */
+function feeDocHtml(id) {
+  const f = byId("fees", id), me_ = company() || {}, c = byId("carriers", f.carrierId) || {};
+  const loads = String(f.loadIds || "").split(",").map(x => byId("loads", x)).filter(Boolean);
+  const line = l => `<tr><td>${esc(l.ref)}${l.brokerLoadNumber ? `<div style="color:#666">${esc(l.brokerName || "")} #${esc(l.brokerLoadNumber)}</div>` : ""}</td><td>${esc(l.pickupLocation)} → ${esc(l.deliveryLocation)}</td><td>${fmtDate(l.deliveryDate)}</td><td style="text-align:right">${money(l.brokerRate)}</td><td style="text-align:right">${money(loadFee(l))}</td></tr>`;
+  return `<div class="doc"><div class="row"><div><h1>Dispatch fee invoice</h1><div class="sub">${esc(f.feeNumber)} · ${fmtDate(f.createdAt)}</div></div>
+      <div style="text-align:right"><div class="strong">${esc(me_.name || "Your dispatch company")}</div><div>${esc(me_.address || "")}</div><div>${esc([me_.phone, me_.email].filter(Boolean).join(" · "))}</div>${me_.ein ? `<div>EIN ${esc(me_.ein)}</div>` : ""}</div></div>
+    <div class="row"><div><h3>Bill to</h3><div class="strong">${esc(c.name || f.carrierName || "—")}</div><div>${esc([c.mcNumber, c.dotNumber].filter(Boolean).join(" · "))}</div><div>${esc(c.address || "")}</div></div>
+      <div><h3>Loads delivered</h3>${fmtDate(f.periodFrom)} – ${fmtDate(f.periodTo)}<h3 style="margin-top:10px">Due date</h3>${fmtDate(f.dueDate)}</div></div>
+    <table><tr><th>Load</th><th>Route</th><th>Delivered</th><th style="text-align:right">Gross</th><th style="text-align:right">Fee</th></tr>${loads.map(line).join("")}</table>
+    <div style="text-align:right"><div style="color:#666">Gross ${money(f.gross)}${c.dispatchFeePct ? ` · fee ${esc(c.dispatchFeePct)}%` : ""}</div><h3 style="margin-top:8px">Total due</h3><div class="total">${money(f.amount)}</div></div>
+    <p style="color:#666;margin-top:16px">Dispatch services under the Dispatch Service Agreement${c.agreementDate ? " dated " + fmtDate(c.agreementDate) : ""}. Freight charges are paid by the broker directly to the carrier or its factoring company; this invoice is only the dispatch fee.</p>
+    ${me_.paymentInstructions ? `<h3 style="margin-top:16px">How to pay</h3><p style="white-space:pre-line">${esc(me_.paymentInstructions)}</p>` : ""}${f.notes ? `<h3 style="margin-top:16px">Notes</h3><p>${esc(f.notes)}</p>` : ""}</div>`;
 }
 
 /* =====================================================================
@@ -1161,8 +1259,8 @@ function openModal(title, body, footer = "", wide = false) {
 }
 const closeModal = () => { if ($("#modal-root .lock")) return; $("#modal-root").innerHTML = ""; };
 
-const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["drivers", "Drivers"], ["brokers", "Brokers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["team", "Team", "drivers"], ["settings", "Settings"]];
-function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page === "carriers" ? "settings" : (page || "dashboard"), arg}; }   // the old Carriers page now lives in Settings
+const NAV = [["dashboard", "Dashboard"], ["loads", "Loads"], ["carriers", "Carriers"], ["drivers", "Drivers"], ["brokers", "Brokers"], ["invoices", "Invoices & Settlements"], ["reports", "Reports"], ["team", "Team", "drivers"], ["settings", "Settings"]];
+function route() { const [, page = "dashboard", arg] = location.hash.split("/"); return {page: page || "dashboard", arg}; }
 
 let lastSidebarSig = null;
 function render() {
@@ -1178,7 +1276,7 @@ function render() {
       <div class="nav-foot">${installEvent && !isStandalone() ? `<button class="btn sm primary" style="margin-bottom:10px" data-action="install">Install app</button>` : ""}${SHEETS_URL && me ? `<div class="strong">${esc(me.name)}</div><div>${esc(ROLE_LABELS[me.role] || "")}</div><div class="actions" style="margin:6px 0 10px"><button class="btn sm refresh-btn" data-action="refresh">↻ Refresh</button><button class="btn sm" data-action="sign-out">Sign out</button></div>` : ""}
       ${SHEETS_URL ? "Saved to Google Sheets" : "Saved in this browser only"}<div id="saving">${savingCount ? "Saving…" : busyMsg}</div>${lastLoad && SHEETS_URL ? `<div>Updated ${new Date(lastLoad).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}</div>` : ""}</div>`;
   }
-  const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"),
+  const pages = {dashboard: pageDashboard, loads: () => arg ? pageLoad(arg) : pageLoads(), drivers: () => pageEntity("drivers"), brokers: () => pageEntity("brokers"), carriers: () => pageEntity("carriers"),
     invoices: pageInvoices, reports: pageReports, team: pageTeam, settings: pageSettings};
   const section = pages[page] ? page : "dashboard";
   if (!me) { $("#view").innerHTML = ""; return; }
@@ -1197,7 +1295,8 @@ const ACTIONS = {
   "close-bg": (d, e) => { if (e.target.classList.contains("modal-back")) closeModal(); },
   new: d => { if (!canTable(d.table, "edit")) return denied(); const preset = {}; if (d.load) { const l = byId("loads", d.load); preset.loadId = l.id;
       if (d.table === "invoices") { preset.brokerId = l.brokerId; preset.amount = l.brokerRate; }
-      if (d.table === "settlements") { preset.amount = l.carrierRate; } } openForm(d.table, null, preset); },
+      if (d.table === "settlements") { preset.amount = l.carrierRate; } }
+    if (d.table === "fees" && d.carrier) { preset.carrierId = d.carrier; preset.periodFrom = d.from; } openForm(d.table, null, preset); },
   edit: d => canTable(d.table, "edit") ? openForm(d.table, d.id) : denied(),
   delete: d => { if (!canDelete(d.table)) return denied(); if (!confirm(`Delete this ${ENT[d.table].title.toLowerCase()}? This can't be undone.`)) return;
     act(() => { deleteEntity(d.table, d.id); if (d.back) location.hash = "#/loads"; }, "Deleted"); },
@@ -1208,7 +1307,7 @@ const ACTIONS = {
   "pick-city": d => { const c = geoUI[d.which]?.[+d.i]; if (c) pickCity(d.which, c); },
   "dispatcher-loads": d => { ui.f = {dispatcher: d.email}; ui.keepFilters = true; location.hash = "#/loads"; },
   theme: d => { setTheme(d.v); render(); },
-  "view-doc": d => openModal("Invoice", docHtml(d.kind, d.id), `<button class="btn" data-action="close">Close</button><button class="btn primary" data-action="print">Print / Save as PDF</button>`, true),
+  "view-doc": d => openModal(d.kind === "fee" ? "Dispatch fee invoice" : "Invoice", docHtml(d.kind, d.id), `<button class="btn" data-action="close">Close</button><button class="btn primary" data-action="print">Print / Save as PDF</button>`, true),
   print: () => window.print(),
   "set-status": d => !canTable(d.table, "edit") ? denied() : act(() => updateRow(d.table, d.id, {status: d.s, ...(d.s === "PAID" ? {paidAt: new Date().toISOString()} : {})}), "Updated"),
   seed: () => { if (!can("team")) return denied(); if (state.loads.length && !confirm("Add demo data on top of your existing data?")) return; act(seedDemo, "Demo data added"); },
@@ -1279,6 +1378,9 @@ document.addEventListener("change", e => {
   if (tb === "settlements") { set("amount", l.carrierRate); }
   if (tb === "invoices") { set("brokerId", l.brokerId || ""); set("amount", l.brokerRate); }
 });
+document.addEventListener("change", e => { const f = e.target.closest?.("#entity-form"); if (f?.dataset.table === "loads" && ["carrierId", "driverId"].includes(e.target.name)) {
+  if (e.target.name === "driverId" && f.elements.carrierId) { const c = byId("drivers", e.target.value)?.carrierId; if (c) f.elements.carrierId.value = c; }   // a driver brings their carrier along
+  renderRpm(f); } });
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { const open = document.querySelector(".suggest:not([hidden])"); if (open) { open.hidden = true; return; } closeModal(); }
   const inp = e.target.closest?.("[data-city]");
@@ -1292,6 +1394,8 @@ document.addEventListener("input", e => {
   if (t.dataset?.city) {                                              // typing a city: forget the old coordinates, suggest new ones
     const form = t.form, w = t.dataset.city; form.elements[w + "Lat"].value = ""; form.elements[w + "Lng"].value = "";
     clearTimeout(cityTimers[w]); cityTimers[w] = setTimeout(() => showSuggestions(t), 250);
+  } else if (t.form?.id === "entity-form" && t.name === "dispatchFee") {
+    t.form.dataset.feeManual = t.value === "" ? "" : "1"; renderRpm(t.form);
   } else if (t.form?.id === "entity-form" && ["brokerRate", "carrierRate", "miles"].includes(t.name)) {
     if (t.name === "miles") { t.form.dataset.manual = "1"; t.form.dataset.est = ""; if (t.form.elements.estimatedMiles) t.form.elements.estimatedMiles.value = ""; }
     renderRpm(t.form);
@@ -1317,12 +1421,12 @@ document.addEventListener("drop", e => { const c = e.target.closest?.(".col"); i
 /* =====================================================================
    10. CSV + JSON IMPORT / EXPORT, DEMO DATA
    ===================================================================== */
-const CSV_HEAD = ["Reference", "Status", "Is Lane", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Carrier Rate", "Miles", "RPM", "Notes"];
+const CSV_HEAD = ["Reference", "Status", "Is Lane", "Carrier", "Broker", "Dispatcher", "Driver", "Pickup Location", "Pickup Date", "Delivery Location", "Delivery Date", "Commodity", "Weight (lbs)", "Equipment", "Broker Rate", "Dispatch Fee", "Carrier Rate", "Miles", "RPM", "Notes"];
 function download(name, text, mime = "text/csv") { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["﻿" + text], {type: mime + ";charset=utf-8"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
 const csvLine = a => a.map(v => { let s = String(v ?? ""); if (/^[=+\-@\t\r]/.test(s) && isNaN(Number(s))) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }).join(",");
 function exportCSV() {
-  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, l.isLane ? "Yes" : "No", l.brokerName || "", l.dispatcherName, l.driverName || "",
-    l.pickupLocation, l.pickupDate, l.deliveryLocation, l.deliveryDate, l.commodity, l.weightLbs, l.equipment, l.brokerRate, l.carrierRate, l.miles, l.rpm, l.notes]);
+  const rows = [...state.loads].sort(newest).filter(loadMatches).map(l => [l.ref, l.status, l.isLane ? "Yes" : "No", l.carrierName || "", l.brokerName || "", l.dispatcherName, l.driverName || "",
+    l.pickupLocation, l.pickupDate, l.deliveryLocation, l.deliveryDate, l.commodity, l.weightLbs, l.equipment, l.brokerRate, loadFee(l), l.carrierRate, l.miles, l.rpm, l.notes]);
   download(`loads-${today()}.csv`, [CSV_HEAD, ...rows].map(csvLine).join("\r\n"));
 }
 function parseCSV(text) {
@@ -1340,12 +1444,12 @@ async function importCSV(text) {
   const get = (r, name) => { const k = name.toLowerCase(); return (r[ix[k] ?? ix[alias[k]]] ?? "").trim(); };
   // Cache broker/driver name→id and the running max reference number once, rather than
   // re-scanning state.brokers/drivers/loads (which only grows) for every imported row.
-  const nameCache = {brokers: new Map(state.brokers.map(b => [b.name.toLowerCase(), b.id])), drivers: new Map(state.drivers.map(d => [d.name.toLowerCase(), d.id]))};
+  const nameCache = {brokers: new Map(state.brokers.map(b => [b.name.toLowerCase(), b.id])), drivers: new Map(state.drivers.map(d => [d.name.toLowerCase(), d.id])), carriers: new Map(state.carriers.map(c => [String(c.name || "").toLowerCase(), c.id]))};
   const ensure = async (t, name) => {
     if (!name) return null;
     const key = name.toLowerCase(), cache = nameCache[t];
     if (cache.has(key)) return cache.get(key);
-    const row = await createRow(t, {name, ...(t === "drivers" ? {status: "ACTIVE"} : {})});
+    const row = await createRow(t, {name, ...(t === "brokers" ? {} : {status: "ACTIVE"})});
     cache.set(key, row.id); return row.id;
   };
   const loadsByRef = new Map(state.loads.map(l => [l.ref, l]));
@@ -1358,9 +1462,9 @@ async function importCSV(text) {
     if (de <= pu) { bad++; continue; }
     const st = get(r, "Status").toUpperCase(), ref = get(r, "Reference");
     const isLaneRaw = get(r, "Is Lane").toLowerCase();
-    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", isLane: ["yes", "true", "1"].includes(isLaneRaw), brokerId: await ensure("brokers", get(r, "Broker")), driverId: await ensure("drivers", get(r, "Driver")),
+    const data = {status: LOAD_STATUSES.includes(st) ? st : "BOOKED", isLane: ["yes", "true", "1"].includes(isLaneRaw), brokerId: await ensure("brokers", get(r, "Broker")), driverId: await ensure("drivers", get(r, "Driver")), carrierId: await ensure("carriers", get(r, "Carrier")) || soleCarrier()?.id || null,
       pickupLocation: get(r, "Pickup Location"), pickupDate: pu.toISOString(), deliveryLocation: get(r, "Delivery Location"), deliveryDate: de.toISOString(), commodity: get(r, "Commodity") || null,
-      weightLbs: get(r, "Weight (lbs)") ? Number(get(r, "Weight (lbs)")) : null, equipment: get(r, "Equipment") || null, brokerRate: Number(get(r, "Broker Rate")) || 0, carrierRate: Number(get(r, "Carrier Rate")) || 0, notes: get(r, "Notes") || null, miles: Number(get(r, "Miles")) > 0 ? Number(get(r, "Miles")) : null};
+      weightLbs: get(r, "Weight (lbs)") ? Number(get(r, "Weight (lbs)")) : null, equipment: get(r, "Equipment") || null, brokerRate: Number(get(r, "Broker Rate")) || 0, carrierRate: Number(get(r, "Carrier Rate")) || 0, ...(get(r, "Dispatch Fee") !== "" ? {dispatchFee: Number(get(r, "Dispatch Fee")) || 0} : {}), notes: get(r, "Notes") || null, miles: Number(get(r, "Miles")) > 0 ? Number(get(r, "Miles")) : null};
     const existing = ref && loadsByRef.get(ref);
     if (existing) { updateRow("loads", existing.id, data); updated++; }
     else {
@@ -1381,21 +1485,23 @@ async function seedDemo() {
   const at = (days, h = 8) => { const d = addDays(days); d.setHours(h, 0, 0, 0); return d.toISOString(); };
   const cA = await createRow("brokers", {name: "Northwind Distribution", mcNumber: "MC-482910", dotNumber: "DOT-1120493", paymentTerms: "Net 30", contactName: "Pat Chen", email: "pat@northwind.example", phone: "555-201-3344", addressLine: "4500 Freight Way", city: "Chicago", state: "IL", zip: "60607"});
   const cB = await createRow("brokers", {name: "Summit Retail Group", mcNumber: "MC-733018", dotNumber: "DOT-2094117", paymentTerms: "Quick pay", contactName: "Morgan Lee", email: "morgan@summitretail.example", phone: "555-882-1290", addressLine: "12 Commerce Blvd", city: "Dallas", state: "TX", zip: "75201"});
-  if (!carrier()) await createRow("carriers", {address: "1200 Depot Rd, Joliet, IL 60436", name: "Redline Freight LLC", mcNumber: "MC-558211", dotNumber: "DOT-2201938", contactName: "Sam Walker", email: "sam@redlinefreight.example", phone: "555-410-7788", insuranceProvider: "Progressive Commercial", insuranceExpiry: addDays(200).toISOString().slice(0, 10), status: "ACTIVE"});
-  const dA = await createRow("drivers", {name: "Marcus Reed", phone: "555-333-1122", email: "marcus.reed@example.com", licenseNumber: "IL-DL-88213", licenseExpiry: addDays(400).toISOString().slice(0, 10), truckNumber: "TRK-104", trailerNumber: "TRL-204", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
-  const dB = await createRow("drivers", {name: "Elena Cho", phone: "555-777-4433", email: "elena.cho@example.com", licenseNumber: "TX-DL-55219", licenseExpiry: addDays(120).toISOString().slice(0, 10), truckNumber: "TRK-220", trailerNumber: "TRL-330", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
+  if (!company()) await createRow("company", {name: "Demo Dispatch LLC", address: "500 Main St, Chicago, IL 60601", contactName: me?.name || "", phone: "555-100-2000", email: "billing@demodispatch.example", paymentInstructions: "Zelle: billing@demodispatch.example\nACH: Demo Bank, routing 000000000, account 0000000"});
+  const kA = await createRow("carriers", {address: "1200 Depot Rd, Joliet, IL 60436", name: "Redline Freight LLC", mcNumber: "MC-558211", dotNumber: "DOT-2201938", contactName: "Sam Walker", email: "sam@redlinefreight.example", phone: "555-410-7788", dispatchFeePct: 7, agreementDate: addDays(-30).toISOString().slice(0, 10), insuranceProvider: "Progressive Commercial", insuranceExpiry: addDays(200).toISOString().slice(0, 10), status: "ACTIVE"});
+  const kB = await createRow("carriers", {address: "88 Lone Star Pkwy, Dallas, TX 75212", name: "Bright Road Express Inc", mcNumber: "MC-901442", dotNumber: "DOT-3388120", contactName: "Elena Cho", email: "elena@brightroad.example", phone: "555-777-4433", dispatchFeePct: 8, agreementDate: addDays(-12).toISOString().slice(0, 10), insuranceProvider: "Great West Casualty", insuranceExpiry: addDays(90).toISOString().slice(0, 10), status: "ACTIVE"});
+  const dA = await createRow("drivers", {carrierId: kA.id, name: "Marcus Reed", phone: "555-333-1122", email: "marcus.reed@example.com", licenseNumber: "IL-DL-88213", licenseExpiry: addDays(400).toISOString().slice(0, 10), truckNumber: "TRK-104", trailerNumber: "TRL-204", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
+  const dB = await createRow("drivers", {carrierId: kB.id, name: "Elena Cho", phone: "555-777-4433", email: "elena.cho@example.com", licenseNumber: "TX-DL-55219", licenseExpiry: addDays(120).toISOString().slice(0, 10), truckNumber: "TRK-220", trailerNumber: "TRL-330", status: "ACTIVE", dispatcherEmail: me?.email || null, dispatcherName: me?.name || null});
   const CITY = {"Chicago, IL": [41.8781, -87.6298], "Columbus, OH": [39.9612, -82.9988], "Dallas, TX": [32.7767, -96.797], "Austin, TX": [30.2672, -97.7431], "Milwaukee, WI": [43.0389, -87.9065], "Detroit, MI": [42.3314, -83.0458], "Houston, TX": [29.7604, -95.3698], "Atlanta, GA": [33.749, -84.388]};
   const MILES = {"Chicago, IL|Columbus, OH": 355, "Dallas, TX|Austin, TX": 195, "Milwaukee, WI|Detroit, MI": 380, "Houston, TX|Atlanta, GA": 790};
   const mk = (o, hist) => { const a = CITY[o.pickupLocation], b = CITY[o.deliveryLocation];
-    const row = createRow("loads", {ref: nextNumber("LD", "loads", "ref"), dispatcherEmail: me?.email || null, dispatcherName: me?.name || null, pickupLat: a?.[0], pickupLng: a?.[1], deliveryLat: b?.[0], deliveryLng: b?.[1], miles: MILES[o.pickupLocation + "|" + o.deliveryLocation], ...o});
+    const row = createRow("loads", {ref: nextNumber("LD", "loads", "ref"), dispatchFee: pctFee(o.brokerRate, o.carrierId), dispatcherEmail: me?.email || null, dispatcherName: me?.name || null, pickupLat: a?.[0], pickupLng: a?.[1], deliveryLat: b?.[0], deliveryLng: b?.[1], miles: MILES[o.pickupLocation + "|" + o.deliveryLocation], ...o});
     hist.forEach(([s, loc, note], i) => createRow("tracking", {loadId: row.id, status: s, location: loc || "", note: note || "", at: new Date(Date.now() - (hist.length - i) * 6 * 3600e3).toISOString()})); return row; };
-  const l1 = await mk({status: "IN_TRANSIT", brokerId: cA.id, driverId: dA.id, pickupLocation: "Chicago, IL", pickupDate: at(-1), deliveryLocation: "Columbus, OH", deliveryDate: at(1, 17), commodity: "Packaged Foods", weightLbs: 42000, equipment: "Dry Van", brokerRate: 2200, carrierRate: 1850}, [["BOOKED", "Chicago, IL", "Load booked and confirmed."], ["DISPATCHED", "Chicago, IL", "Driver dispatched to pickup."], ["IN_TRANSIT", "Indianapolis, IN", "On schedule."]]);
-  const l2 = await mk({status: "DELIVERED", brokerId: cB.id, driverId: dB.id, pickupLocation: "Dallas, TX", pickupDate: at(-6, 9), deliveryLocation: "Austin, TX", deliveryDate: at(-6, 18), commodity: "Retail Goods", weightLbs: 18000, equipment: "Reefer", brokerRate: 1100, carrierRate: 900}, [["BOOKED", "Dallas, TX"], ["DISPATCHED", "Dallas, TX"], ["IN_TRANSIT", "Waco, TX"], ["DELIVERED", "Austin, TX", "Delivered on time, POD received."]]);
-  await mk({status: "BOOKED", brokerId: cA.id, pickupLocation: "Milwaukee, WI", pickupDate: at(2), deliveryLocation: "Detroit, MI", deliveryDate: at(3, 14), commodity: "Auto Parts", weightLbs: 30000, equipment: "Flatbed", brokerRate: 1750, carrierRate: 0}, [["BOOKED", "Milwaukee, WI", "Awaiting carrier assignment."]]);
-  await mk({status: "DISPATCHED", brokerId: cB.id, driverId: dA.id, pickupLocation: "Houston, TX", pickupDate: at(1), deliveryLocation: "Atlanta, GA", deliveryDate: at(3), commodity: "Building Materials", weightLbs: 44000, equipment: "Flatbed", brokerRate: 3100, carrierRate: 2600}, [["BOOKED", "Houston, TX"], ["DISPATCHED", "Houston, TX", "Driver assigned."]]);
+  const l1 = await mk({status: "IN_TRANSIT", brokerId: cA.id, driverId: dA.id, pickupLocation: "Chicago, IL", pickupDate: at(-1), deliveryLocation: "Columbus, OH", deliveryDate: at(1, 17), commodity: "Packaged Foods", weightLbs: 42000, equipment: "Dry Van", brokerRate: 2200, carrierId: kA.id}, [["BOOKED", "Chicago, IL", "Load booked and confirmed."], ["DISPATCHED", "Chicago, IL", "Driver dispatched to pickup."], ["IN_TRANSIT", "Indianapolis, IN", "On schedule."]]);
+  const l2 = await mk({status: "DELIVERED", brokerId: cB.id, driverId: dB.id, pickupLocation: "Dallas, TX", pickupDate: at(-6, 9), deliveryLocation: "Austin, TX", deliveryDate: at(-6, 18), commodity: "Retail Goods", weightLbs: 18000, equipment: "Reefer", brokerRate: 1100, carrierId: kB.id}, [["BOOKED", "Dallas, TX"], ["DISPATCHED", "Dallas, TX"], ["IN_TRANSIT", "Waco, TX"], ["DELIVERED", "Austin, TX", "Delivered on time, POD received."]]);
+  await mk({status: "BOOKED", brokerId: cA.id, pickupLocation: "Milwaukee, WI", pickupDate: at(2), deliveryLocation: "Detroit, MI", deliveryDate: at(3, 14), commodity: "Auto Parts", weightLbs: 30000, equipment: "Flatbed", brokerRate: 1750, carrierId: kA.id}, [["BOOKED", "Milwaukee, WI", "Rate confirmation signed."]]);
+  await mk({status: "DISPATCHED", brokerId: cB.id, driverId: dA.id, pickupLocation: "Houston, TX", pickupDate: at(1), deliveryLocation: "Atlanta, GA", deliveryDate: at(3), commodity: "Building Materials", weightLbs: 44000, equipment: "Flatbed", brokerRate: 3100, carrierId: kA.id}, [["BOOKED", "Houston, TX"], ["DISPATCHED", "Houston, TX", "Driver assigned."]]);
   await createRow("invoices", {invoiceNumber: nextNumber("INV", "invoices", "invoiceNumber"), loadId: l2.id, brokerId: cB.id, amount: 1100, status: "SENT", dueDate: addDays(25).toISOString().slice(0, 10)});
-  await createRow("settlements", {loadId: l2.id, amount: 900, status: "APPROVED"});
   setLoadStatus(l2.id, "INVOICED", "Invoice created.");
+  await createRow("fees", {feeNumber: nextNumber("DF", "fees", "feeNumber"), carrierId: kB.id, periodFrom: ymd(addDays(-7)), periodTo: ymd(new Date()), loadIds: l2.id, loadRefs: l2.ref, gross: l2.brokerRate, amount: loadFee(l2), status: "SENT", dueDate: addDays(5).toISOString().slice(0, 10)});
 }
 
 /* =====================================================================

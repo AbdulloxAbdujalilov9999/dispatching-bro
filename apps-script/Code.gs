@@ -44,16 +44,18 @@ const ACCESS = {
   loads:       { view: LOADS_VIEW, edit: LOADS_EDIT },
   tracking:    { view: LOADS_VIEW, edit: LOADS_EDIT },
   brokers:     { view: LOADS_VIEW, edit: LOADS_EDIT },
-  carriers:    { view: ALL_ROLES,  edit: ["owner"] },            // the single carrier this platform works for; only the owner edits it
+  carriers:    { view: ALL_ROLES,  edit: ["owner", "manager"] }, // the carriers (owner-operators / fleets) you dispatch for
+  company:     { view: ALL_ROLES,  edit: ["owner"] },            // one row: your dispatch company, printed on dispatch-fee invoices
   drivers:     { view: ["owner", "manager", "dispatcher", "hr"], edit: ["owner", "manager", "dispatcher", "hr"] },
   invoices:    { view: MONEY, edit: MONEY },
-  settlements: { view: MONEY, edit: MONEY }
+  settlements: { view: MONEY, edit: MONEY },
+  fees:        { view: MONEY, edit: MONEY }                       // dispatch-fee invoices you send to your carriers
 };
 // Deleting is narrower than editing: removing a load/broker/carrier also removes linked money records,
 // which some roles can't even see, so only the owner and managers may do it.
 const DELETE = {
-  loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"],
-  drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY, settlements: MONEY
+  loads: ["owner", "manager"], tracking: ["owner", "manager"], brokers: ["owner", "manager"], carriers: ["owner"], company: ["owner"],
+  drivers: ["owner", "manager", "dispatcher", "hr"], invoices: MONEY, settlements: MONEY, fees: MONEY
 };
 // Loads and drivers belong to a dispatcher. Whoever creates a load is recorded as its dispatcher; only the
 // owner or a manager can assign a load or a driver to somebody else.
@@ -64,12 +66,14 @@ const ASSIGN_KEYS = ["dispatcherEmail", "dispatcherName"];
 // any extra field the website sends is added as a new column automatically.
 const TABS = {
   brokers:     { sheet: "Brokers",     cols: ["name", "mcNumber", "dotNumber", "contactName", "phone", "email", "billingEmail", "addressLine", "city", "state", "zip", "paymentTerms", "notes", "id", "createdAt", "updatedAt"] },
-  carriers:    { sheet: "Carriers",    cols: ["name", "mcNumber", "dotNumber", "address", "contactName", "phone", "email", "status", "insuranceProvider", "insuranceExpiry", "notes", "id", "createdAt", "updatedAt"] },
+  carriers:    { sheet: "Carriers",    cols: ["name", "mcNumber", "dotNumber", "address", "contactName", "phone", "email", "status", "dispatchFeePct", "agreementDate", "factoringCompany", "insuranceProvider", "insuranceExpiry", "notes", "id", "createdAt", "updatedAt"] },
+  company:     { sheet: "Company",     cols: ["name", "address", "contactName", "phone", "email", "ein", "paymentInstructions", "id", "createdAt", "updatedAt"] },
   drivers:     { sheet: "Drivers",     cols: ["name", "phone", "email", "carrierName", "dispatcherName", "licenseNumber", "licenseExpiry", "truckNumber", "trailerNumber", "status", "notes", "id", "carrierId", "dispatcherEmail", "createdAt", "updatedAt"] },
-  loads:       { sheet: "Loads",       cols: ["ref", "status", "brokerName", "dispatcherName", "carrierName", "driverName", "route", "miles", "brokerRate", "rpm", "carrierRate", "carrierRpm", "margin", "pickupLocation", "pickupDate", "deliveryLocation", "deliveryDate", "commodity", "equipment", "weightLbs", "brokerLoadNumber", "isLane", "notes", "id", "brokerId", "carrierId", "driverId", "dispatcherEmail", "pickupLat", "pickupLng", "deliveryLat", "deliveryLng", "createdAt", "updatedAt"] },
+  loads:       { sheet: "Loads",       cols: ["ref", "status", "brokerName", "dispatcherName", "carrierName", "driverName", "route", "miles", "brokerRate", "rpm", "carrierRate", "carrierRpm", "margin", "dispatchFee", "pickupLocation", "pickupDate", "deliveryLocation", "deliveryDate", "commodity", "equipment", "weightLbs", "brokerLoadNumber", "isLane", "notes", "id", "brokerId", "carrierId", "driverId", "dispatcherEmail", "pickupLat", "pickupLng", "deliveryLat", "deliveryLng", "createdAt", "updatedAt"] },
   tracking:    { sheet: "Tracking",    cols: ["loadRef", "at", "status", "location", "note", "id", "loadId", "createdAt", "updatedAt"] },
   invoices:    { sheet: "Invoices",    cols: ["invoiceNumber", "loadRef", "brokerName", "amount", "status", "dueDate", "paidAt", "notes", "id", "loadId", "brokerId", "createdAt", "updatedAt"] },
-  settlements: { sheet: "Settlements", cols: ["loadRef", "carrierName", "amount", "status", "paidAt", "notes", "id", "loadId", "carrierId", "createdAt", "updatedAt"] }
+  settlements: { sheet: "Settlements", cols: ["loadRef", "carrierName", "amount", "status", "paidAt", "notes", "id", "loadId", "carrierId", "createdAt", "updatedAt"] },
+  fees:        { sheet: "DispatchFees", cols: ["feeNumber", "carrierName", "periodFrom", "periodTo", "loadRefs", "gross", "amount", "status", "dueDate", "paidAt", "notes", "id", "carrierId", "loadIds", "createdAt", "updatedAt"] }
 };
 
 function doGet() {
