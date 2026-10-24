@@ -6,7 +6,7 @@ table is a tab you can open, filter and download as Excel. People sign in with
 an email + password or with Google, and each role only sees what its job needs.
 
 **Modules:** dashboard, loads (drag-and-drop board + list, tracking timeline, route map),
-brokers, drivers, invoices & settlements, reports, team, settings
+carriers (with dispatch fee %), brokers, drivers, invoices & settlements (incl. dispatch-fee invoices to carriers), reports, team, settings
 (light/dark). Filters on the pages that need them, a **Refresh** button, and it installs as an app. Invoices open as printable documents (Print → Save as PDF). Loads
 export/import as CSV.
 
@@ -38,19 +38,37 @@ repository is no longer used and can be archived.
 |---|---|---|---|---|---|
 | Loads & tracking | edit | edit | edit | edit | – |
 | Brokers | edit | edit | edit | edit | – |
-| Your carrier (in Settings) | edit | – | – | – | – |
+| Carriers | edit | edit | view | view | view |
+| Your dispatch company (in Settings) | edit | – | – | – | – |
+| Dispatch-fee invoices | edit | edit | – | edit | – |
 | Drivers | edit | edit | edit | – | edit |
 | Invoices & settlements | edit | edit | – | edit | – |
 | Reports & revenue | view | view | – | view | – |
 | Team, Sheet link, demo data | ✓ | – | – | – | – |
 
-The platform works with **one carrier**. Its details (name, MC, DOT, address, contact, insurance) are
-kept by the owner under **Settings → Your carrier**, saved in the `Carriers` tab, and printed on invoices;
-loads, drivers and settlements are linked to it automatically. Only Owner and Manager can **delete** loads and brokers. Every load is saved under
+The platform runs a **dispatch service**: you dispatch for several carriers (owner-operators and small
+fleets) and charge each one a fee. Carriers live on the **Carriers** page (name, MC, DOT, contact, fee %,
+the date its dispatch agreement was signed, factoring company, insurance). Every load and driver belongs to
+one carrier; while there is only one, everything is linked to it automatically. Broker invoices print the
+load's carrier at the top. Your own company (name, contact, EIN, how carriers pay you) is kept by the owner
+under **Settings → Your dispatch company** and printed on dispatch-fee invoices. Only Owner and Manager can **delete** loads and brokers. Every load is saved under
 the name of whoever adds it; only Owner and Manager can assign a load or a driver to a dispatcher. HR never
 receives rates, revenue, invoices or reports — the script withholds that data,
 it isn't just hidden on screen. The rules live in `apps-script/Code.gs`
 (`ACCESS`, `DELETE`) and are mirrored in `index.html` (`SECTION`) for the menus.
+
+## Dispatch fees
+
+* Each carrier has a **dispatch fee %** (7% by default). A load's **Dispatch fee** fills in as that % of
+  the broker rate and follows the rate and carrier until you type a fee of your own.
+* **Invoices & settlements → Dispatch fees** lists delivered loads that aren't billed yet, per carrier, with a
+  **Bill these loads** button. A fee invoice covers one carrier's loads delivered between two dates (a load
+  can only be on one invoice that isn't void), and opens as a printable document with your payment details.
+* Dashboard and Reports show fees earned, fees paid to you and fees still owed.
+* Keep it a bona fide dispatch service: a signed agreement with each carrier, every load booked for one named
+  carrier, and your fee paid by the carrier, never by the broker or a factoring company. FMCSA's June 2023
+  guidance says a dispatcher who picks which of several carriers gets a load, or who touches the freight money,
+  needs broker authority.
 
 ## Dispatchers
 
@@ -104,12 +122,14 @@ consider swapping in a keyed provider — the calls live in one place (`GEO`, `c
 
 | Tab | What's in it |
 |---|---|
-| **Loads** | Reference, status, broker / dispatcher / carrier / driver names, route, miles, broker rate, RPM, carrier rate, carrier RPM, margin, pickup & delivery place and date (+ coordinates), commodity, equipment, weight, whether it's marked as a **lane**, notes |
+| **Loads** | Reference, status, broker / dispatcher / carrier / driver names, route, miles, broker rate, RPM, dispatch fee, carrier rate, carrier RPM, margin, pickup & delivery place and date (+ coordinates), commodity, equipment, weight, whether it's marked as a **lane**, notes |
 | **Tracking** | One row per status update of a load (time, status, location, note) |
 | **Brokers** | Name, MC, DOT, contact, phone, emails, address, payment terms, notes |
-| **Carriers** | One row: the carrier the platform works for (name, MC, DOT, address, contact, insurance) |
+| **Carriers** | The carriers you dispatch for (name, MC, DOT, address, contact, fee %, agreement date, factoring, insurance, status) |
+| **Company** | One row: your dispatch company (name, address, contact, EIN, payment instructions) |
 | **Drivers** | Driver details (email, license and expiry are optional) and the assigned dispatcher |
-| **Invoices**, **Settlements** | Money owed to you / to carriers, linked to the load |
+| **Invoices**, **Settlements** | Money brokers owe / you owe carriers, linked to the load |
+| **DispatchFees** | Dispatch-fee invoices to carriers: number, carrier, dates, load refs, gross, fee, status, due / paid dates |
 
 Accounts and password hashes are **not** in the spreadsheet — the script keeps
 them in its private Script properties. You can edit sheet cells by hand; the
